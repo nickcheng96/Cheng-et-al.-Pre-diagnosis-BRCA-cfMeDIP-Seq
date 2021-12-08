@@ -2,8 +2,9 @@ scriptdir="/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/ca
 mkdir -p $scriptdir
 cd $scriptdir
 
+#changing seed for different subsampling fold splits
 for l in {1..200};
-do sed  s/seedno/${l}/g master.R   > breast_${l}_run.R;
+do sed  s/seedno/${l}/g CV.subsample.pipeline.oneiteration.R > breast_${l}_run.R;
 sed s/seedno/${l}/g DMR.ML.run.sh > breast_${l}_run.sh;
 done
 
