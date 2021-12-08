@@ -4,7 +4,7 @@ cd $scriptdir
 
 for l in {1..200};
 do sed  s/seedno/${l}/g master.R   > breast_${l}_run.R;
-sed s/seedno/${l}/g master.sh > breast_${l}_run.sh;
+sed s/seedno/${l}/g DMR.ML.run.sh > breast_${l}_run.sh;
 done
 
 logdir="/.mounts/labs/awadallalab/private/ncheng/job_logs/breast/90.10/group2/"
