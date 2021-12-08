@@ -1,0 +1,12 @@
+scriptdir="/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/cancer_analysis/dmr_analysis/breast/1/"
+mkdir -p $scriptdir
+cd $scriptdir
+
+for l in {1..200};
+do sed  s/seedno/${l}/g master.R   > breast_${l}_run.R;
+sed s/seedno/${l}/g master.sh > breast_${l}_run.sh;
+done
+
+logdir="/.mounts/labs/awadallalab/private/ncheng/job_logs/breast/90.10/group2/"
+mkdir -p $logdir
+for i in breast*_run.sh ;do qsub -wd $logdir -l h_vmem=75g,h_rt=48:00:00 -P awadallalab -b y  $scriptdir/${i}; done
