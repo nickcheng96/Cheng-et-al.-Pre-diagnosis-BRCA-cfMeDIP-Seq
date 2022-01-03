@@ -41,86 +41,6 @@ matrix_setup = function(all_count_matrix, train_samples, features, sample_inform
 }
 
 
-feature_selection = function(dmr_table, tissue_filter_windows, remove_prob, keep_prob, option = optionno, cpg_count, train_samples, all_count_matrix, sample_information_df, size= 100) {
-  matrix_setup = function(all_count_matrix, train_samples, features, sample_information_df) {
-    train_df = all_count_matrix[rownames(all_count_matrix) %in% features,]
-    train_df = train_df[,colnames(train_df) %in% train_samples]
-    train_df_t = data.frame(t(train_df), check.names = F)
-    group_dat = sample_information_df[sample_information_df$GRP_Id %in% train_samples,]
-    group_dat = group_dat[order(match(rownames(train_df_t), group_dat$GRP_Id)),]
-    return_df = data.frame(cbind(group = group_dat$group, train_df_t), check.names = F)
-    return(return_df)
-  }
-  rfe_calc = function(train_set, size_estimate = 100) {
-    control <- rfeControl(functions=rfFuncs, method="cv", number=10)
-    size = min(size_estimate, ncol(train_set[,-1]))
-    rfe_model <- rfe(train_set[,-1], train_set$group, sizes=size, rfeControl=control, metric = "Accuracy")
-    rfe_features = rfe_model$variables
-    targ_size = min(size, ncol(train_set[,-1]))
-    rfe_features = rfe_features[rfe_features$Variables == size,]
-    rfe_features = rfe_features[order(-rfe_features$Overall),]
-    features = unique(rfe_features$var)[1:targ_size]
-    return(features)
-  }
-  
-  
-  filtered_dmr_table = autosome_filt(dmr_table)
-  cpg_filt = cpg_count[cpg_count$count > 5,]
-  filtered_dmr_table = filtered_dmr_table[rownames(filtered_dmr_table) %in% cpg_filt$window,]
-  #filtering for probes to keep
-  if(keep_prob == 'None') {
-    filtered_dmr_table = filtered_dmr_table
-  } else {
-    filtered_dmr_table = filtered_dmr_table[rownames(filtered_dmr_table) %in% tissue_filter_windows[[1]],]
-  }
-  
-  if (remove_prob == 'None') {
-    filtered_dmr_table = filtered_dmr_table
-  } else {
-    filtered_dmr_table = filtered_dmr_table[!rownames(filtered_dmr_table) %in% tissue_filter_windows[[2]],]
-  }
-  
-  if (option == 1) { #all significant DMRs
-    sig_dmr = filtered_dmr_table[filtered_dmr_table$pvalue < 0.05 & abs(filtered_dmr_table$log2FoldChange) > 0.7,]
-    sig_dmr = rownames(sig_dmr[order(sig_dmr$pvalue),])
-    if (length(sig_dmr) > 1) {
-      train_set = matrix_setup(all_count_matrix, train_samples, sig_dmr, sample_information_df)
-      features = rfe_calc(train_set, size = size)
-    } else {
-      features = sig_dmr
-    }
-  } else if (option == 2) { #hyper DMRs only 
-    sig_dmr = filtered_dmr_table[filtered_dmr_table$pvalue < 0.05 & (filtered_dmr_table$log2FoldChange) < -0.7,]
-    sig_dmr = rownames(sig_dmr[order(sig_dmr$pvalue),])
-    if (length(sig_dmr) > 1) {
-      train_set = matrix_setup(all_count_matrix, train_samples, sig_dmr, sample_information_df)
-      features = rfe_calc(train_set, size = size)
-    } else {
-      features = sig_dmr
-    }
-  } else if (option == 3) { #top 150 hypo and hyper
-    hyper_sig_dmr = filtered_dmr_table[filtered_dmr_table$pvalue < 0.05 & (filtered_dmr_table$log2FoldChange) > 0.7,]
-    hypo_sig_dmr = filtered_dmr_table[filtered_dmr_table$pvalue < 0.05 & (filtered_dmr_table$log2FoldChange) < -0.7,]
-    hyper_sig_dmr = rownames(hyper_sig_dmr[order( hyper_sig_dmr$pvalue),])
-    hypo_sig_dmr = rownames(hypo_sig_dmr[order(hypo_sig_dmr$pvalue),])
-    
-    if (length(hyper_sig_dmr) > 1 ) {
-      hyper_train_set = matrix_setup(all_count_matrix, train_samples, hyper_sig_dmr, sample_information_df)
-      hyper_features = rfe_calc(hyper_train_set, size = size/2)
-    } else {
-      hyper_features = hyper_sig_dmr
-    }
-    if (length(hypo_sig_dmr) > 1 ) {
-      hypo_train_set = matrix_setup(all_count_matrix, train_samples, hypo_sig_dmr, sample_information_df)
-      hypo_features = rfe_calc(hypo_train_set, size = size/2)
-    } else {
-      hypo_features = hypo_sig_dmr
-    }
-    features = c(hyper_features, hypo_features)
-  }
-  return(features)
-}
-
 auc_calc = function(prediction_table) {
   tmp = prediction_table
   tmp = tmp[order(-tmp$methylation_score),]
@@ -219,14 +139,12 @@ for (fold in 1:10) {
   #setwd(wkdir)
   dds <- estimateSizeFactors(dds) #estimating size factors for tmm normalization
   dat <- counts(dds, normalized=TRUE) #getting tmm-normalised counts
-  #saveRDS(dat, '/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/medips_files/300bp/medips.extended/breast_cpg_filt_read5_batch1_8_deseq2.bloodfilt.dgnormmatrix.RDS')
   dat = dat[rowSums(dat) > 0,] #removing rows with no signals
   
   coldata = data.frame(colData(dds)[,c('group','age_group','Batch')]) #again can add gender but we're only looking at female samples
   mod <- model.matrix(~ Batch, coldata) 
   mod0 <- model.matrix(~ 1, coldata)
-  #sv_count = num.sv(dat, mod) #calculating number of significant surrogate variables
-  sv_count=2
+  sv_count = num.sv(dat, mod) #calculating number of significant surrogate variables
   svseq <- svaseq(dat, mod, mod0, n.sv=sv_count) #modelling batch effect with sva
   # output:
   ddssva <- dds
@@ -246,9 +164,7 @@ for (fold in 1:10) {
     design(ddssva) <- ~ SV1 + SV2 + SV3 + age_group + group
   }
   
-  #vsd <- vst(ddssva, blind=T, nsub = 10000)
-  #saveRDS(assay(vsd), '/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/medips_files/300bp/medips.extended/breast_cpg_filt_read10_batch1_11_vst.all.RDS')
-  ddssva <- DESeq(ddssva) #differential methylation analysis 
+ ddssva <- DESeq(ddssva) #differential methylation analysis 
   ressva <- results(ddssva) #generating results table 
   ressva = ressva[complete.cases(ressva$pvalue),] #removing NAs 
   ressva$logFC = ressva$log2FoldChange
@@ -257,3 +173,124 @@ for (fold in 1:10) {
 
 saveRDS(year2_diagnosis_samples_splits,paste0(dmrtable_dir, 'sample_split_read.readno','_year.all_seed.',seedno,'.RDS'))
 saveRDS(dmr_list, paste0(dmrtable_dir, 'dmr_table_list_read.readno','_year.all_seed.',seedno,'.RDS'))
+
+matrix = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/medips_files/300bp/medips.extended/breast_cpg.reg.blood.filt_read10_mans.gerdfilt_deseq2.norm.matrix.RDS') #normalised matrix
+
+
+samples_df_folds = readRDS(paste0(dmrtable_dir, 'sample_split_read.',10,'_year.all_seed.',seedno,'.RDS'))
+dmr_fold_list = readRDS(paste0(dmrtable_dir, 'dmr_table_list_read.',10,'_year.all_seed.',seedno,'.RDS'))
+
+#rf
+for (fold in 1:length(dmr_fold_list)) {
+  train_samples = samples_df_folds[samples_df_folds$fold != fold,]
+  test_samples =  samples_df_folds[samples_df_folds$fold == fold,]
+  dmr_table = dmr_fold_list[[fold]]
+  dmr_table$window = rownames(dmr_table)
+  
+  #####random forest approach#####
+  savedir='/Path/to/saving/files/'
+  dir.create(savedir, recursive = T)
+  
+  
+  train_set = train_samples
+  train_set$group = factor(train_set$group, levels = c('breast_cancer','control'))
+  test_set = test_samples
+  test_set$group = factor(test_set$group, levels = c('breast_cancer','control'))
+  all_count_matrix = matrix
+  train_test_matrix = all_count_matrix[,colnames(all_count_matrix) %in% c(train_set$GRP_Id, test_set$GRP_Id)]
+  matrix.mean = mean(rowMeans(train_test_matrix))
+  
+  sample_information_df = rbind(train_set,test_set)
+  feature_filt = data.frame(dmr_table,stringsAsFactors = F)
+
+  control_train = train_set[train_set$group == 'control',]
+  control_train_matrix = all_count_matrix[,colnames(all_count_matrix) %in% control_train$GRP_Id]
+  
+  tmp = rowMeans(control_train_matrix)
+  tmp1 = tmp[tmp < matrix.mean]
+  cancer_train = train_set[train_set$group != 'control',]
+  cancer_train_matrix = all_count_matrix[,colnames(all_count_matrix) %in% cancer_train$GRP_Id]
+  feature_filt = feature_filt[rownames(feature_filt) %in% names(tmp1),] #
+  
+  hyper_sig_features = feature_filt[feature_filt$logFC > 0 & feature_filt$pvalue < 0.05,]
+  hyper_sig_features = hyper_sig_features[order(hyper_sig_features$pvalue),]
+  hypo_sig_features = feature_filt[feature_filt$logFC < 0 & feature_filt$pvalue < 0.05,]
+  hypo_sig_features = hypo_sig_features[order(hypo_sig_features$pvalue),]
+  combined_sig_features = rbind(hyper_sig_features, hypo_sig_features)
+  combined_sig_features = combined_sig_features[order(combined_sig_features$pvalue),]
+  
+  
+  
+  #all_ids = all_ids[!all_ids %in% ]
+  feature_set = seq(100,200,25)
+  
+  #tmp =do.call('rbind',lapply(rf_list, function(x)x[1,] ))
+  #machine learning training with filtered features
+  rf_list = list()
+  
+  #####450k array filter - beta#####
+  
+  rf_list_hyper = list()
+  rf_list_balanced = list()
+  glm_list_balanced = list()
+  glm_list_hyper = list()
+  
+  library(caret)
+  library(ROCR)
+  
+  #hyper only test
+  for (feature_number in 1:length(feature_set)) {
+    feature_length = feature_set[feature_number]
+    dirsave = paste0(savedir,'/rf/',feature_length,'.hyper/performance/')
+    dir.create(dirsave, recursive = T)
+    features = hyper_sig_features$window
+    train_samples = train_set$GRP_Id
+    test_samples = test_set$GRP_Id
+    train_set_matrix = matrix_setup(all_count_matrix, train_samples, features, train_set) 
+    test_set_matrix = matrix_setup(all_count_matrix, test_samples, features, test_set)
+
+    
+    targ_features = hyper_sig_features$window[1:feature_length]
+    
+    train_set_matrix = train_set_matrix[,colnames(train_set_matrix) %in% c('group',targ_features)]
+    test_set_matrix = test_set_matrix[,colnames(test_set_matrix) %in% c('group',targ_features)]
+    control = trainControl(method = 'repeatedcv', number = 10, repeats = 10, search = 'random', classProbs = TRUE, summaryFunction = twoClassSummary)
+    mtry = 100
+    tunegrid = expand.grid(.mtry = 100)
+    metric = 'Accuracy'
+    
+    ntrees = c(50,250,500,1000)
+    ntree_list = list()
+    acc = c()
+    for (tree in 1:length(ntrees)) {
+      rf_model = train(group ~ ., data = train_set_matrix, method = 'rf', metric = metric, tuneGrid = tunegrid, trControl = control, ntrees = ntrees[tree])
+      predictions = predict(rf_model, test_set_matrix[,-1])
+      predictions_prob = predict(rf_model, test_set_matrix[,-1], type = 'prob')
+      prediction_table = data.frame(GRP_Id= rownames(test_set_matrix), predictions = predictions, reported = test_set_matrix$group, methylation_score = predictions_prob[,colnames(predictions_prob) != 'control'], seed = seedno)
+      prediction_table = prediction_table[order(-prediction_table$methylation_score),]
+      prediction_table$features = length(targ_features)
+      prediction_table$auroc = auc_calc(prediction_table)
+      print(confusionMatrix(predictions, test_set_matrix$group) )
+      prediction_table$trees = ntrees[tree]
+      prediction_table$array_filt = 'balanced'
+      prediction_table$model = 'RF'
+      train_performance = getTrainPerf(rf_model)
+      prediction_table$TrainROC = train_performance$TrainROC
+      prediction_table$TrainSens = train_performance$TrainSens
+      prediction_table$TrainSpec = train_performance$TrainSpec
+      pred_table = (confusionMatrix(predictions, test_set_matrix$group))
+      prediction_table$Sensitivity_overall = pred_table$byClass[1]
+      prediction_table$Specificity_overall = pred_table$byClass[2]
+      prediction_table = merge(prediction_table, sample_information_df[,c('GRP_Id','Diagnosis_Time')], all.x = T)
+      
+      prediction_table = time_breakdown_performance(prediction_table, sample_information_df, control_report = F, cancer_group = 'breast_cancer')
+      ntree_list[[tree]] = prediction_table
+      acc = c(acc,prediction_table$auroc[1])
+    }
+    return_df = ntree_list[[which(acc == max(acc))[1]]]
+    saveRDS(return_df, paste0(dirsave, 'rf_top.hyper_read.10','_seed.',seedno,'_fold.',fold,'.RDS'))
+  }
+  
+  
+  
+}
