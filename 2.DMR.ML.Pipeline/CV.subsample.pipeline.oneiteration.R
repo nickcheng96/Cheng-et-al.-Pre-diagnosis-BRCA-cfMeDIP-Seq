@@ -74,33 +74,29 @@ auc_calc = function(prediction_table) {
 
 ####else#####
 
-cpg_count = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/cpg_sites/cpg_site_positions/window_count/cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
+cpg_count = readRDS('cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
 cpg_count = cpg_count[cpg_count$count > 5,] #selecting windows with at least 6 or mor CpG sites
 
-tissuedir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/tissue_reference/'
-combined_tissue_summary = readRDS(paste0(tissuedir,'blood_wgbs_summary.RDS'))
+combined_tissue_summary = readRDS('blood_wgbs_summary.RDS')
 blood_wgbs_windows = as.character(combined_tissue_summary[combined_tissue_summary$Blood_Cells >= 0.4,'window'])
 
-fantom_regulatory_information = readRDS('/.mounts/labs/awadallalab/private/ncheng/references/medips_regulatory_window/fantom_regulatory_information_300.RDS')
+fantom_regulatory_information = readRDS('fantom_regulatory_information_300.RDS')
 regulatory = fantom_regulatory_information[fantom_regulatory_information$CpG_Region != 'null' | fantom_regulatory_information$Regulatory != 'None','window']
 
 
 #setting file directories
-medips.count_dir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/medips_files/300bp/medips.extended/' #directory containing sample/region counts
-dmrtable_dir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/cancer_analysis/dmr_analysis/batch1_8.extended/all_samples_dmr/breast.all.bloodfilt.deseq2/read10.cv/dmr_tables.ensemble.90.10.gerd.filt.v3/'
+medips.count_dir='/Path/to/counts/' #directory containing sample/region counts
+dmrtable_dir='/Path/to/save/DMR/tables/'
 dir.create(dmrtable_dir, recursive = T)
-#/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/cancer_analysis/auc_ensembl/close_diagnosis/batch1_8/trimq_control/ensemble/breast/
-setwd(dmrtable_dir) #setting wkdir
 
-medips.count_dir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/medips_files/300bp/medips.extended/' #directory containing sample/region counts
+setwd(dmrtable_dir) #setting work directory
 medips.count_df = readRDS(paste0(medips.count_dir, 'brpa.extended_v2_medips.count.RDS')) #reading in sample/region count matrix 
-all_train_test_samples = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/participant_data/hq.brca.sample.information.RDS')
+all_train_test_samples = readRDS('brca.sample.information.RDS')
 ####
 medips.count_df.filt = medips.count_df[,colnames(medips.count_df) %in% c(all_train_test_samples$GRP_Id)] #removing samples from count matrix to only keep samples of interest
 all_train_test_samples = all_train_test_samples[all_train_test_samples$GRP_Id %in% colnames(medips.count_df.filt),]
 all_train_test_samples  = all_train_test_samples[order(match(all_train_test_samples$GRP_Id, colnames(medips.count_df.filt))),] #match order of samples between count matrix and data information df
-#gerd = c('AIX_0035','AIX_0264','AIX_0252','AIX_0152','AIX_0058','AIX_0157')
-#group_data_filt = group_data_filt[!group_data_filt$GRP_Id %in% gerd,]
+
 
 #####DMR calling######
 set.seed(seedno)
