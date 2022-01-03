@@ -285,6 +285,7 @@ for (fold in 1:length(dmr_fold_list)) {
     }
     return_df = ntree_list[[which(acc == max(acc))[1]]]
     saveRDS(return_df, paste0(dirsave, 'rf_top.hyper_read.10','_seed.',seedno,'_fold.',fold,'.RDS'))
+    saveRDS(features, paste0(dirsave, 'rf_top.hyper_read.10','_seed.',seedno,'_fold.',fold,'.features.RDS'))
   }
   
   
