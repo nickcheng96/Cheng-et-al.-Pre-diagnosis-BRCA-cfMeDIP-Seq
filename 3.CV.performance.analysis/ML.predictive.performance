@@ -1,5 +1,6 @@
 ######functions#####
 library(ROCR)
+library(fbroc)
 library(caret)
 library(plyr)
 library(pROC)
@@ -17,7 +18,7 @@ library(survMarkerTwoPhase)
 library(RCurl)
 library(cvAUC)
 library(DESeq2)
-library(plyr)
+
 
 #weighted incidence
 all_cause_mortality_CAN<-structure(list(x = c(0, 2.5, 7, 12, 17, 22, 27, 32, 37, 42, 47, 
@@ -74,6 +75,245 @@ age_incidence<-structure(list(Age.group = c("0 to 04", "05 to 09", "10 to 14",
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        602.1, 517.9, 422.2, 365.1)), class = "data.frame", row.names = c(NA, 
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          -19L))
 
+CustomsurvMTP.cch <- function(time, event, marker, weights, 
+                              subcoh,
+                              data, 
+                              estimation.method = 'NP', 
+                              predict.time, 
+                              marker.cutpoint = 'median',
+                              ci.method = "logit.transformed",
+                              alpha=0.05
+){
+  
+  
+  # checks
+  stopifnot(is.data.frame(data))
+  
+  time <- eval(substitute(time), data)
+  event <- 1*eval(substitute(event), data)
+  marker <- eval(substitute(marker), data)
+  weights <- eval(substitute(weights), data)
+  vi <- 1*eval(substitute(subcoh), data)
+  
+  stopifnot(is.element(estimation.method, c("NP", "SP")))
+  stopifnot(is.numeric(predict.time))
+  if(marker.cutpoint=='median') marker.cutpoint =  median(eval(substitute(marker), data))
+  stopifnot(is.numeric(marker.cutpoint))
+  
+  #set some defaults
+  measures = c('all')
+  cutoff <- marker.cutpoint
+  cutoff.type = "none"; #cutoffN = 100 #functionality to be added later
+  SEmethod ="normal"; #bootstraps = 10
+  
+  
+  
+  if(length(cutoff)==0) cutoff = NA;  
+  
+  #data.frame checks
+  if(!is.data.frame(data))
+    stop("data must be a data.frame")
+  
+  subcohort.data = data[vi==1,]
+  
+  #ci.method is either "standard" or "logit.transformed" 
+  if(!is.element(substr(ci.method, 1,4), c("stan", "logi"))) stop("ci.method must be either 'standard' or 'logit.transformed'")
+  
+  #SEmethod is either "normal" or "boostrap"
+  if(!is.element(substr(SEmethod, 1,4), c("norm", "boot"))) stop("SEmethod must be either 'normal' or 'bootstrap'")
+  
+  if(is.element("all", measures)) measures <- c("AUC","TPR", "FPR", "PPV", "NPV")
+  
+  #make sure we have a cutoff if the measures call for it
+  if(any(c("TPR", "FPR", "PPV", "NPV") %in% measures) & is.na(cutoff)) stop("'cutoff' must be set in order to calculate 'FPR', 'TPR', 'PPV, 'NPV'")
+  
+  
+  if(any(weights[vi==1] <=0)) stop("weights must be > 0.")
+  if(is.element(substr(SEmethod, 1,4), c("boot"))) stop("bootstrap SE's cannot be calculated when sample weights are provided, please set SEmethod='normal'")
+  subcohort = TRUE
+  
+  
+  
+  
+  
+  #end of checks
+  cohort.size = dim(data)[1]
+  
+  ## get estimates via getEstimates, also calculate the bootstrap se if necessary
+  
+  #build data frame for getEstimates
+  
+  
+  if(is.element(estimation.method, c("S", "SP", "Semi-Parametric", "semiparametric"))){
+    
+    mydata <- prepareDataSP(time, event, marker, weights, vi)  
+    estRawOutput <- getEstimatesSP( data = mydata, 
+                                    cutpoint = cutoff,  
+                                    measures = measures,
+                                    predict.time = predict.time,
+                                    CalVar = TRUE,  
+                                    cutoffN = dim(subcohort.data)[1])  
+    
+    
+    
+    
+    
+    
+  }else if(is.element(estimation.method, c("N", "NP", "Non-Parametric", "nonparametric"))){
+    # warning("Standard error calculations are not available for non-parametric estimates yet.")
+    mydata <- prepareDataNP(time, event, marker, weights, vi)  
+    estRawOutput <- getEstimatesNP( subcohort.data = mydata$subdata,
+                                    cohort.data = mydata$cohortdata,
+                                    cutpoint = cutoff,  
+                                    measures = measures,
+                                    predict.time = predict.time,
+                                    CalVar = FALSE,  
+                                    subcohort = TRUE)
+    
+  }else{
+    
+    stop("estimation.method not set correctly: it must be one of `SP` (or 'semiparametric') or 'NP' (or 'nonparametric')")
+  }
+  
+  myests <- processRawOutput(estRawOutput, CImethod = ci.method, alpha)
+  myests$roc<-estRawOutput$roc
+  myests$AUC.NP.adj<-estRawOutput$AUC.adj
+  myests$se.cohort = estRawOutput$se.coh
+  myests$fit = NULL
+  myests$model.fit <- estRawOutput$fit; 
+  myests$marker.cutpoint = marker.cutpoint; 
+  myests$ci.method = ci.method; 
+  #myests$SEmethod = SEmethod;
+  myests$predict.time = predict.time; 
+  myests$alpha = alpha; 
+  myests$study.design = "Case-Cohort"
+  myests$estimation.method <- ifelse(estimation.method=="NP", "Non-parametric", 
+                                     "Semi-parametric")
+  ## return the results in a nice fashion
+  class(myests) <-  "SurvMTP_cch"
+  myests
+}
+
+CustomgetEstimatesNP <- function(subcohort.data, 
+                                 cohort.data,
+                                 cutpoint,  
+                                 measures,
+                                 predict.time,
+                                 CalVar = TRUE, subcohort=FALSE)
+{
+  
+  
+  
+  
+  
+  N = nrow(cohort.data); ## cohort size
+  data0 <- cohort.data #unsorted data
+  data  <- subcohort.data
+  data = data [order(data$yi),] ## sorted by marker
+  
+  ck = data$yi;     
+  wgtk = data$wi;  
+  xk = data$xi; 
+  sk = data$si; 
+  psk=data$psi; 
+  
+  c0 <- cutpoint; 
+  t0 <- predict.time
+  
+  
+  nc = length(ck); # sampled size 
+  ind.ck = (1:nc)[order(ck)]
+  CWk = WGT.FUN(data[,c(1,2)],data0, t0=t0)  # use full cohort xi di to calculate censoring weights
+  
+  St0.Fck = sum.I(ck,">=",ck,wgtk*CWk*(xk >= t0))/sum(CWk*wgtk)
+  Ft0.Fck = sum.I(ck,">=",ck,wgtk*CWk*(xk <  t0))/sum(CWk*wgtk)
+  Fck = sum.I(ck,">=",ck,wgtk*CWk)/sum(CWk*wgtk)
+  St0 = max(St0.Fck)            ## St0     = P(T> t0)
+  Ft0 = 1-St0                   ## Ft0     = P(T<=t0)
+  FPR.ck= (St0-St0.Fck)/St0     ## P(Y> ck|T> t0)
+  TPR.ck= (Ft0-Ft0.Fck)/Ft0     ## P(Y> ck|T<=t0)
+  NPV.ck= St0.Fck/Fck           ## P(T> t0|Y<=ck)
+  PPV.ck= (Ft0-Ft0.Fck)/(1-Fck) ## P(T<=t0|Y> ck)
+  AUC = sum(TPR.ck*(FPR.ck-c(FPR.ck[-1],0)))
+  
+  ## acc.ck: accuracy estimates at c
+  nm.acc = c("FPR","TPR","NPV","PPV"); 
+  acc.ck = data.frame("cutoff"=ck,"FPR"=FPR.ck,"TPR"=TPR.ck,"NPV"=NPV.ck, "PPV"=PPV.ck)    
+  acc.ckt = rbind(c(min(ck)-1,1,1,NPV.ck[1],PPV.ck[1]),acc.ck)
+  AUC.adj = with(acc.ckt,sum(TPR*(FPR-c(FPR[-1],0))))
+  AUC.adj = AUC.adj - with(acc.ckt,sum(((TPR-c(TPR[-1],0))*(FPR-c(FPR[-1],0)))/2))
+  AUC<-AUC.adj
+  
+  if(!is.null(c0)){
+    tmpind.c0 = sum.I(c0, ">=", ck); acc.c0 = acc.ck[tmpind.c0,]; F.c0 = Fck[tmpind.c0]
+  }else{ acc.c0 = acc.ck }
+  est= data.frame("AUC" = AUC, acc.c0[-1])
+  
+  est  = est[,measures]
+  #est= list("AUC" = AUC, "ACC.u0"=acc.uk[tmpind.u0,-c(1,ind0)],"ACC.c0"=acc.c0, "ACC.all" = acc.ck) ##output all cutoff
+  if(!CalVar){
+    list("estimates" = est, "roc"=acc.ckt,"AUC.adj"=AUC.adj)
+  }else{
+    ###### Variance calculation below ########
+    Phi=Phi.C.new.FUN(xk=data$xi,dk=data$di, Ti=data0$xi, Di=data0$di, t0 = t0)
+    
+    ## doing u0 and c0 together
+    c.u0 = NULL; acc.u0.temp=NULL; F.c0.b =F.c0
+    
+    CC = c(c.u0,c0); #nu0 = length(u0); 
+    acc.c0.b = rbind(acc.u0.temp,acc.c0); 
+    
+    U.ACC.c0.tmp = as.list(1:4); 
+    U.ACC.c0 =Wexp.c0= as.list(1:4); 
+    names(U.ACC.c0.tmp) = names(U.ACC.c0)=nm.acc; n.acc.c=length(U.ACC.c0)
+    
+    
+    I.ck.c0 = 1*(ck>=VTM(CC,nc)); 
+    U.ACC.c0.tmp$FPR =  (xk >  t0)*(I.ck.c0-  VTM(acc.c0.b$FPR,nc))/St0      ## exp for FPRhat(c)-FPR(c)
+    U.ACC.c0.tmp$TPR =  (xk <= t0)*(I.ck.c0-  VTM(acc.c0.b$TPR,nc))/(1-St0)  ## exp for TPRhat(c)-TPR(c)
+    U.ACC.c0.tmp$NPV =  (1-I.ck.c0)*(1*(xk> t0)-VTM(acc.c0.b$NPV,nc))/VTM(F.c0.b,nc)
+    U.ACC.c0.tmp$PPV =    I.ck.c0*(1*(xk<=t0)-VTM(acc.c0.b$PPV,nc))/(1-VTM(F.c0.b,nc))
+    
+    U.AUC = (xk<=t0)/(1-St0)*(1-FPR.ck-AUC)+(xk>t0)/St0*(TPR.ck-AUC)
+    
+    Wexp.np.AUC = CWk*U.AUC+Phi%*%(wgtk*CWk*U.AUC)/sum(wgtk)
+    se.auc = Est.Var.CCH.trueweights(N,Wexp.np.AUC,data,data$si, subcohort=TRUE)
+    se.u0 = NULL
+    
+    se.c0 = NULL
+    se.coh = NULL
+    
+    if (!is.null(c0)) {
+      npc = length(U.ACC.c0)  
+      for(kk in 1:npc){ 
+        
+        U.ACC.c0[[kk]] = U.ACC.c0.tmp[[kk]]
+        Wexp.c0[[kk]] = CWk*U.ACC.c0[[kk]]+Phi%*%(wgtk*CWk*U.ACC.c0[[kk]])/sum(wgtk)
+        tmp.se <- Est.Var.CCH.trueweights(N,data.frame(Wexp.c0[[kk]]),data,data$si, subcohort=subcohort)
+        se.c0  = c(se.c0,tmp.se$cch.variance)
+        se.coh = c(se.coh, tmp.se$cohort.variance) 
+      }
+      se.c0 = data.frame(sqrt(matrix(se.c0,nrow=length(c0))))
+      se.coh = data.frame(sqrt(matrix(se.coh, nrow = length(c0))))
+      names(se.c0) = names(se.coh) = nm.acc    
+    }
+    
+    se <- data.frame("AUC" = sqrt(se.auc$cch.variance), se.c0)
+    se.coh <- data.frame("AUC" = sqrt(se.auc$cohort.variance), se.coh)
+    
+    se <- se[,measures]
+    se.coh <- se.coh[,measures]
+    list("estimates" = est,"se" =se, "se.coh" = se.coh,"roc"=acc.ckt,"AUC.adj"=AUC.adj) 
+  }	
+  
+  
+}
+
+environment(CustomgetEstimatesNP) <- asNamespace('survMarkerTwoPhase')
+assignInNamespace("getEstimatesNP", CustomgetEstimatesNP, ns = "survMarkerTwoPhase")
+
+environment(CustomsurvMTP.cch) <- asNamespace('survMarkerTwoPhase')
+assignInNamespace("survMTP.cch", CustomsurvMTP.cch, ns = "survMarkerTwoPhase")
 
 
 #functions
@@ -169,32 +409,40 @@ confidence_interval <- function(vector) {
   result <- c("lower" = ordered[lower_bound], "upper" = ordered[upper_bound])
   return(result)
 }
-roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir = figdir, st,auc_summary.df,sample_info, core.number,foldno = 2) {
+
+roc.conc_plot_function = function(plot_list, file_name = 'performance_auc',dir = figdir, st,auc_summary.df,sample_info, core.number,foldno = 2,sample_info_dir) {
   incr.count = function(x) {
-
-    tmp.df = x
-    tmp.df = tmp.df[order(tmp.df$fpr, tmp.df$tpr),]
-    tmp.df$fpr = round(tmp.df$fpr, digits =3)
-    tmp.df$tpr = round(tmp.df$tpr, digits =3)
-
-    return_df = NULL
-    for (i in 2:nrow(tmp.df)) {
-
-      start_fpr = tmp.df$fpr[i-1]
-      end_fpr = tmp.df$fpr[i]
-      
-      start_tpr = tmp.df$tpr[i-1]
-      end_tpr = tmp.df$tpr[i]
-      
-      fpr.seq = seq(start_fpr,end_fpr, 0.001)
-      if(length(fpr.seq) > 1) {
-        tpr.seq = seq(start_tpr,end_tpr,by = (end_tpr -start_tpr)/(length(fpr.seq)-1))
-      } else{
-        tpr.seq = end_tpr
+    
+    if (nrow(x) > 2 & nrow(x[x$reported == st[1]]) >= 1 & nrow(x[x$reported == st[2]]) >= 1) {
+      #print(x$seed[1])
+      tmp.df = x
+      tmp.df = tmp.df[order(tmp.df$fpr, tmp.df$tpr),]
+      tmp.df$fpr = round(tmp.df$fpr, digits =3)
+      tmp.df$tpr = round(tmp.df$tpr, digits =3)
+      #tmp.df = ddply(numcolwise(max))
+      return_df = NULL
+      for (i in 2:nrow(tmp.df)) {
+        #print(i)
+        start_fpr = tmp.df$fpr[i-1]
+        end_fpr = tmp.df$fpr[i]
+        
+        start_tpr = tmp.df$tpr[i-1]
+        end_tpr = tmp.df$tpr[i]
+        
+        fpr.seq = seq(start_fpr,end_fpr, 0.001)
+        if(length(fpr.seq) > 1) {
+          tpr.seq = seq(start_tpr,end_tpr,by = (end_tpr -start_tpr)/(length(fpr.seq)-1))
+        } else{
+          tpr.seq = end_tpr
+        }
+        
+        tmp.return.df = data.frame(tpr_mean = tpr.seq, fpr_mean = fpr.seq, seed = x$seed[1])
+        return_df = rbind(return_df, tmp.return.df)
       }
       
-      tmp.return.df = data.frame(tpr_mean = tpr.seq, fpr_mean = fpr.seq, seed = x$seed[1])
-      return_df = rbind(return_df, tmp.return.df)
+    } else {
+      return_df = NULL
+      
     }
     return(return_df)
   }
@@ -206,7 +454,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
     
     tmp_list = lapply(plot_list, function(x){
       tmp = x[x$GRP_Id %in% targ.ids,]
-      tmp = tmp[-tmp$methylation_score,]
+      tmp = tmp[order(-tmp$methylation_score),]
       
       tmp$STATUS  = tmp$reported
       tmp$PRED_CLASS = tmp$predictions
@@ -252,7 +500,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
     
     average.auc = NULL
     
-
+    #aucper iteration
     tmp = lapply(plot_list, function(x) {
       tmp1 = merge(x[,c('GRP_Id','methylation_score','reported','predictions')], sample_info[,c('GRP_Id','Age','Diagnosis_Time')], by = 'GRP_Id')
       return(tmp1)
@@ -267,7 +515,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
     
     perf.df = NULL
     j = 1
-    perf.list= lapply(seq(1:200), function(j) {
+    perf.list= lapply(seq(1:100), function(j) {
       set.seed(j)
       for (i in 1:nrow(tmp.seed.average)) {
         selected.samples = tmp.seed.average[sample(x = seq(1:nrow(tmp.seed.average)), i),]
@@ -297,9 +545,9 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
             axis.text=element_text(size=12),
             axis.title=element_text(size=14,face="bold")) +
       xlab('Number of repeats') + 
-      ylab('Mean AUC') + ggtitle(round(combined.iteration.perf$mean[nrow(combined.iteration.perf)],digits = 3))
+      ylab('Mean AUC') + ggtitle(round(combined.iteration.perf$mean[nrow(combined.iteration.perf)],digits = 3))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
     print(plot)
- 
+    #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
     dev.off()
     
     
@@ -374,7 +622,8 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
           case_no = nrow(tmp1[tmp1$STATUS!=st[2],])
           control_no = nrow(tmp1[tmp1$STATUS==st[2],])
           auc.df =data.frame(matrix(nrow = 0, ncol=3))
-          if (case_no > 0) {
+          
+          if (case_no >= 1 & control_no >= 1 & control_no + case_no > 2) {
             for (l in 1:nrow(tmp1)) {
               x = tmp1[1:l,]
               case_cum = nrow(x[x$STATUS!=st[2],])
@@ -395,6 +644,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
           return(auc.df)
           #auc.df = auc.df[auc.df$fpr > 0,]
         } )
+        #auc.df_list = auc.df_list[sapply(auc.df_list,nrow) >= 2]
         auc.df_list = lapply(auc.df_list, function(x) incr.count(x))
         auc.df_list = lapply(auc.df_list, function(x) ddply(x, c('seed','fpr_mean'), numcolwise(max)))
         auc.df_list = lapply(auc.df_list, function(x) {
@@ -404,6 +654,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
         })
         null.ind = sapply(auc.df_list, is.null)
         auc.df_list = auc.df_list[!null.ind]
+        auc.df_list = auc.df_list[sapply(auc.df_list,function(x)length(x) > 1)]
         auc.df = auc.df_list[[1]][,c('fpr_mean','tpr_mean')]
         for (m in 2:length(auc.df_list)) {
           auc.df = merge(auc.df, auc.df_list[[m]][,c('fpr_mean','tpr_mean')], by = 'fpr_mean', all = T)
@@ -482,7 +733,8 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       
       
       
-
+      #png(paste0(dir,'/',file_name,'_average.smooth.raw.ROC.png'), height = 500, width = 500, type = 'cairo')
+      #png('test.png',height = 500, width = 500, type=  'cairo')
       pdf(paste0(dir,'/',file_name,'.futime.',fu.ind,'_average.smooth.raw.ROC.v2.pdf'), height = 5, width = 5)
       
       auc.df.raw$seed = as.character(auc.df.raw$seed)
@@ -500,6 +752,10 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       print(plot)
       dev.off()
       
+      #
+      #auc.df.raw.list = split(auc.df.raw, auc.df.raw$seed)
+      #auc.df.raw.extended.raw = do.call('rbind',auc.df.raw.list)
+      #auc.df.raw.extended.raw$count = 1
       test = ddply(auc.df.raw[,c('tpr_mean','fpr_mean','seed')],c('fpr_mean','seed'), numcolwise(mean))
       test$tpr_mean = round(test$tpr_mean, digits = 3 )
       test$fpr_mean = round(test$fpr_mean, digits = 3 )
@@ -520,7 +776,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       mean_scores$reported = factor(as.character(mean_scores$reported), levels = rev(st))
       tmp.list = list(mean_scores)
       mean_scores = mean_scores[order(-mean_scores$methylation_score),]
-      auc = auc_calc(tmp.list)
+      auc = auc_calc(mean_scores)
       auc = data.frame(average_auroc = auc[1], seed = 0)
       auc$subtype ='all'
       
@@ -579,7 +835,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       tmp1$f.str = tmp1$reported
       
       tmp1 = tmp1[order(-tmp1$methylation_score),]
-      mean.test.auc = auc_calc(list(tmp1))
+      mean.test.auc = auc_calc((tmp1))
       case_no = nrow(tmp1[tmp1$STATUS!=st[2],])
       control_no = nrow(tmp1[tmp1$STATUS==st[2],])
       auc.df =data.frame(matrix(nrow = 0, ncol=3))
@@ -598,9 +854,10 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       
       test.avg = test.avg[order(test.avg$fpr_mean,test.avg$tpr_mean),]
       plot =  ggplot(combined.ci, aes(x=fpr_mean, ymax = ci.upper,ymin = ci.lower))+ theme_bw() + 
-
+        #geom_vline(xintercept = 0.05, linetype = "longdash") + 
         scale_x_continuous(limits = c(0,1.01), expand= c(0,0),breaks = seq(0,1,0.1))+
         scale_y_continuous(limits = c(0,1), expand= c(0,0),breaks = seq(0,1,0.1))+
+        #geom_line()+
         geom_ribbon(alpha = 0.5,fill = '#619B8A')+
         theme_bw() + 
         ylab('True Positive Rate') + 
@@ -618,7 +875,8 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       
       
       plot = plot + geom_line(data = test.avg, aes(x=fpr_mean, y = tpr_mean), size = 1, col = '#273F38') +   ggtitle(paste0(mean.auc.all, ' (', ci_auc[1], '-',ci_auc[2],')',' sens.90 = ', sens.90,'(',sens.90.cil,'-',sens.90.ciu,') \n sens.95 = ',sens.95,'(',sens.95.cil,'-',sens.95.ciu,')')) 
-    
+      #plot = plot + geom_line(data = test.ciu, aes(x = fpr_mean,y = tpr_mean))
+      #plot = plot + geom_line(data = test.cil, aes(x = fpr_mean,y = tpr_mean))
       pdf(paste0(dir,'/',file_name,'.futime.',fu.ind,'_average.smooth.raw.ROC2.nomedtest.v2.pdf'), height = 4, width = 4)
       
       print(plot)
@@ -639,7 +897,10 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       ###combined cv#####
       auc_list.combined.incr.df = do.call('rbind',auc_list.combined.incr)
       test = auc_list.combined.incr.df
-    
+      # = ddply(auc_list.combined.incr.df[,c('tpr_mean','fpr_mean','seed')],c('fpr_mean','seed'), numcolwise(mean))
+      #test$tpr_mean = round(test$tpr_mean, digits = 3 )
+      #test$fpr_mean = round(test$fpr_mean, digits = 3 )
+      #test.count = ddply(test[,c('tpr_mean','fpr_mean')],c('fpr_mean'), numcolwise(sum))
       test.avg = ddply(test[,c('tpr_mean','fpr_mean')], c('fpr_mean'), numcolwise(mean,na.rm = T))
       test.ciu = ddply(test[,c('tpr_mean','fpr_mean')], c('fpr_mean'), function(x) (quantile(x$tpr_mean,.975,na.rm=T) ))
       test.cil = ddply(test[,c('tpr_mean','fpr_mean')], c('fpr_mean'), function(x) (quantile(x$tpr_mean,.025,na.rm=T) ))
@@ -649,14 +910,14 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       colnames(test.cil)[2] = 'tpr_mean'
       colnames(combined.ci) = c('fpr_mean','ci.upper','ci.lower')
       # mean score curve#
-    
+      #mean_scores = do.call('rbind',lapply(auc_list.combined, function(x) x[,]))
       mean_scores = ddply(mean_scores[,c('GRP_Id','methylation_score','reported')], c('GRP_Id','reported'), numcolwise(mean))
       mean_scores = mean_scores[order(-mean_scores$methylation_score),]
-
+      #mean_scores = merge(mean_scores,combined_list[[1]][,c('GRP_Id','reported')],by = 'GRP_Id')
       mean_scores$reported = factor(as.character(mean_scores$reported), levels = rev(st))
       tmp.list = list(mean_scores)
       mean_scores = mean_scores[order(-mean_scores$methylation_score),]
-      auc = auc_calc(tmp.list)
+      auc = auc_calc(mean_scores)
       auc = data.frame(average_auroc = auc[1], seed = 0)
       auc$subtype ='all'
       
@@ -715,7 +976,7 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       tmp1$f.str = tmp1$reported
       
       tmp1 = tmp1[order(-tmp1$methylation_score),]
-      mean.test.auc = auc_calc(list(tmp1))
+      mean.test.auc = auc_calc((tmp1))
       case_no = nrow(tmp1[tmp1$STATUS!=st[2],])
       control_no = nrow(tmp1[tmp1$STATUS==st[2],])
       auc.df =data.frame(matrix(nrow = 0, ncol=3))
@@ -733,9 +994,11 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       
       
       test.avg = test.avg[order(test.avg$fpr_mean,test.avg$tpr_mean),]
-      plot =  ggplot(combined.ci, aes(x=fpr_mean, ymax = ci.upper,ymin = ci.lower))+ theme_bw() +
+      plot =  ggplot(combined.ci, aes(x=fpr_mean, ymax = ci.upper,ymin = ci.lower))+ theme_bw() + 
+        #geom_vline(xintercept = 0.05, linetype = "longdash") + 
         scale_x_continuous(limits = c(0,1.01), expand= c(0,0),breaks = seq(0,1,0.1))+
         scale_y_continuous(limits = c(0,1), expand= c(0,0),breaks = seq(0,1,0.1))+
+        #geom_line()+
         geom_ribbon(alpha = 0.5,fill = '#619B8A')+
         theme_bw() + 
         ylab('True Positive Rate') + 
@@ -753,7 +1016,9 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       
       
       plot = plot + geom_line(data = test.avg, aes(x=fpr_mean, y = tpr_mean), size = 1, col = '#273F38') +   ggtitle(paste0(mean.auc.all, ' (', ci_auc[1], '-',ci_auc[2],')',' sens.90 = ', sens.90,'(',sens.90.cil,'-',sens.90.ciu,') \n sens.95 = ',sens.95,'(',sens.95.cil,'-',sens.95.ciu,')')) 
-      pdf(paste0(dir,'/',file_name,'.futime.',fu.ind,'_average.smooth.raw.CV.AUC.pdf'), height = 4, width = 4)
+      #plot = plot + geom_line(data = test.ciu, aes(x = fpr_mean,y = tpr_mean))
+      #plot = plot + geom_line(data = test.cil, aes(x = fpr_mean,y = tpr_mean))
+      pdf(paste0(dir,'/',file_name,'.futime.',fu.ind,'_average.smooth.raw.ROC2.nomedtest.combinedcv.v2.pdf'), height = 4, width = 4)
       
       print(plot)
       dev.off()
@@ -761,18 +1026,617 @@ roc_plot_function.only = function(plot_list, file_name = 'performance_auc',dir =
       
     } 
   }
+  
+  aml_inc <- function(gender, x){
+    if(gender==1)
+      splinefun(x=c(seq(0,90,5)), y=c(cumsum(age_incidence$BreastM/100000)*5), method="mono")(x)
+    else
+      splinefun(x=c(seq(0,90,5)), y=c(cumsum(age_incidence$BreastF/100000)*5), method="mono")(x)
+  }
+  
+  all_surv <- function(gender, age1, age2){
+    if(gender==1)
+      s <- all_cause_mortality_CAN$lx
+    else 
+      s <- all_cause_mortality_CAN$lx.1
+    f <- function(x) exp(splinefun(all_cause_mortality_CAN$x, log(s), method="mono")(x))
+    f(age2) / f(age1)
+  }
+  
+  
+  
+  weightsf<-function(ids, matched_samples){
+    #matched_samples_temp<- matched_samples[na.omit(match(matched_samples$GRP_Id ,ids)),]
+    matched_samples_temp<-matched_samples[match(ids,matched_samples$GRP_Id),]
+    matched_samples_temp $gender= ifelse(matched_samples_temp$Sex=="Female",0,1)
+    
+    expected_rate_breast_cr <- mean(aml_inc_cr(matched_samples_temp $Sex, matched_samples_temp $Age, matched_samples_temp $Age+pmax(1, matched_samples_temp $censorship_time/365.25))[matched_samples_temp $group=="control"])
+    
+    n_total_breast <- sum(matched_samples_temp $group!="control")/expected_rate_breast_cr
+    n_total_breast
+    weights <- rep(1, nrow(matched_samples_temp))
+    weights[matched_samples_temp $group=="control"] <- n_total_breast/sum(matched_samples_temp $group=="control")
+    return(weights)
+  }
+  aml_inc_cr <- Vectorize(function(gender, age1, age2) sum(diff(aml_inc(gender, seq(age1,age2,1) ))*all_surv(gender, age1, seq(age1,age2-1,1)) ), c("gender","age1","age2"))
+  
+  #Concordant curve
+  concCV = NULL
+  concCV.merge = NULL
+  seq1=seq(30,2580,10)
+  maxseed<- length(tmp_list)/10
+  AUC.NPt<-NULL
+  AUC.SPt<-NULL
+  AUC.NPavgs<-NULL
+  TPRlist=list()
+  FPRlist=list()
+  PPVlist=list()
+  NPVlist=list()
+  #maxseed = 20
+  #maxseed = 5
+  tmp_list.split.seed = list()
+  #lapply
+  start = Sys.time()
+  for (seedno in 1:maxseed) {
+    tmp_list.split.seed[[seedno]] = tmp_list[c((seedno-1)*10+1):((seedno)*10)]
+    tmp_list.split.seed[[seedno]] = lapply(tmp_list.split.seed[[seedno]], function(x) {
+      if (nrow(x) >0) {
+        return.df = x
+        return.df$seed = seedno
+      } else {
+        return.df = NULL
+      }
+      
+      return(return.df)
+    }) 
+  }
+  start = Sys.time()
+  pred.perf.weighted = mclapply(tmp_list.split.seed, function(a) {
+    #foldno = 1
+    conc1<-NULL
+    y.test.merge<-NULL
+    lpred.merge<-NULL
+    AUC.NPavgt<-NULL
+    AUC.NPavgs = NULL
+    TPRALL.list = list()
+    FPRALL.list = list()
+    PPVALL.list = list()
+    NPVALL.list = list()
+    df2 = NULL
+    for(foldno in 1:10){
+      if (is.null(a[[foldno]]) == F) {
+        cur.seed = a[[foldno]]$seed[1]
+        #samples_df_folds = sample_info
+        samples_df_folds = readRDS(paste0(sample_info_dir, 'brca.predx.sample.split.seed.',cur.seed,'.RDS')) #sample information + fold pslits
+        ml_performance_riskscores =  a[[foldno]]
+        
+        samples_df_folds = samples_df_folds[samples_df_folds$GRP_Id %in% targ.ids,]
+        samples_df_folds$group = samples_df_folds$STATUS
+        matched_samples<-samples_df_folds
+        matched_samples$group = ifelse(matched_samples$Cancer == 'control','control','breast_cancer')
+        fold_temp<-samples_df_folds[match(ml_performance_riskscores$GRP_Id,samples_df_folds$GRP_Id),]
+        fold_temp$GRP_Id==ml_performance_riskscores$GRP_Id
+        fold_temp$group = ifelse(fold_temp$Cancer == 'control','control','breast_cancer')
+        y.test=Surv(time=abs(fold_temp$censorship_time),event=fold_temp$group!="control") #time-to-event outcome
+        rownames(y.test)<-fold_temp$GRP_Id
+        
+        matched_samples = matched_samples[matched_samples$GRP_Id %in% matched_samples$GRP_Id,]
+        rownames(y.test)==ml_performance_riskscores$GRP_Id
+        
+        weights2<-weightsf(ml_performance_riskscores$GRP_Id,matched_samples)
+        
+        linear.pred_lasso.nofilt<-ml_performance_riskscores$methylation_score
+        concw<-round(survConcordance(y.test ~ linear.pred_lasso.nofilt,weights=weights2)$concordance,digits = 3)
+        if (sum(ml_performance_riskscores$reported != 'control') > 0) {
+          concw<-round(survConcordance(y.test ~ linear.pred_lasso.nofilt,weights=weights2)$concordance,digits = 3)
+          conc1<-c(conc1,concw)
+          
+          lpred.merge<-c(lpred.merge,ml_performance_riskscores$methylation_score)
+          y.test.merge<-rbind(y.test.merge,cbind(y.test))
+          
+          df1<-data.frame(cbind(time1<-y.test[,1],event1<-y.test[,2],weights<-weights2,marker1<-linear.pred_lasso.nofilt))
+          df1$subcohort<-1
+          #df1$X3<-1
+          #df1$X4<-runif(length(yy[,1]),-1,5)
+          #head(df1)
+          survConcordance(Surv(df1$X1,df1$X2) ~ df1$X4, weights=df1$X3)$concordance
+          
+          mcut<-median(df1$X4)
+          AUC.NP<-NULL
+          AUC.SP<-NULL
+          AUC.NPavg<-NULL
+          
+          max.followup<-max(df1$X1)-1
+          min.followup<-min(df1$X1)+1
+          
+          
+          
+          #AUC.NPavgt<-c(AUC.NPavgt,AUC.NPavg)
+          
+          
+          method1<-"NP"
+          TPRALL<-NULL
+          FPRALL<-NULL
+          PPVALL<-NULL
+          NPVALL<-NULL
+          for(year in 1:7){
+            
+            #print(c(seedno,year))
+            
+            predt<-365.25*year
+            TPR<-NULL
+            FPR<-NULL
+            marker.cut<-median(df1$X4)
+            if (predt < max(df1$X1) & predt > min(df1$X1)) {
+              survMTP1<-survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3, 
+                                                        subcoh = subcohort, data = df1, estimation.method = method1, predict.time = predt,marker.cutpoint = marker.cut)
+              #print(survMTP1$estimates)
+              TPRALL<-cbind(TPRALL ,survMTP1$roc$TPR)
+              FPRALL<-cbind(FPRALL ,survMTP1$roc$FPR)
+              PPVALL<-cbind(PPVALL ,survMTP1$roc$PPV)
+              NPVALL<-cbind(NPVALL ,survMTP1$roc$NPV)
+              
+            } else {
+              TPRALL<-cbind(TPRALL ,rep(NA, nrow(df1) + 1))
+              FPRALL<-cbind(FPRALL ,rep(NA,nrow(df1) + 1))
+              PPVALL<-cbind(PPVALL ,rep(NA, nrow(df1) + 1))
+              NPVALL<-cbind(NPVALL ,rep(NA, nrow(df1) + 1))
+            }
+            
+          }
+          TPRALL.list[[foldno]] = TPRALL
+          FPRALL.list[[foldno]] = FPRALL
+          PPVALL.list[[foldno]] = PPVALL
+          NPVALL.list[[foldno]] = NPVALL
+          
+          for(predt in seq1){
+            if(predt>min.followup&predt<max.followup){
+              AUC.NPavg<-c(AUC.NPavg,survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3,subcoh = subcohort, data = df1, estimation.method = "NP", predict.time = predt, marker.cutpoint = mcut)$AUC.NP.adj)
+            }else{
+              AUC.NPavg<-c(AUC.NPavg,NA)
+            }
+          }
+          AUC.NPavgt<-cbind(AUC.NPavgt,AUC.NPavg)
+        } else {
+          conc1 = c(conc1, NA)
+          TPRALL.list[[foldno]] = NULL#
+          FPRALL.list[[foldno]] = NULL#
+        }
+        
+        
+        df2 = rbind(df2, df1)
+      }
+      
+    }
+    
+    #AUC.NPavgt
+    #conc1
+    #y.test.merge
+    #lpred.merge
+    
+    #concCV<-round(cbind(concCV,conc1),digits =3)
+    AUC.NPavgs<-cbind(AUC.NPavgs,apply(AUC.NPavgt,1,FUN=function(x){mean(as.numeric(x),na.rm=T)}))
+    
+    # weights2<-weightsf(rownames(y.test.merge),matched_samples)
+    # concCV.merge1<-survConcordance(Surv(y.test.merge) ~ lpred.merge,weights=weights2)$concordance
+    #concCV.merge<-c(concCV.merge,concCV.merge1)
+    
+    # head(df1<-data.frame(cbind(time1<-y.test.merge[,1],event1<-y.test.merge[,2],weights<-weights2,marker1<-lpred.merge)))
+    df2$subcohort<-1
+    #df1$X3<-1
+    #df1$X4<-runif(length(yy[,1]),-1,5)
+    #head(df1)
+    survConcordance(Surv(df2$X1,df2$X2) ~ df2$X4, weights=df2$X3)$concordance
+    
+    
+    
+    mcut<-median(df2$X4)
+    AUC.NPt = NULL
+    AUC.SPt = NULL
+    AUC.NP<-NULL
+    AUC.SP<-NULL
+    AUC.NPavg = NULL
+    max.followup<-max(df1[df1$X2 == 1,'X1'])-1
+    min.followup<-min(df1[df1$X2 == 1,'X1'])+1
+    #seq1<-seq(min.followup,max.followup,10)
+    for(predt in (365.25*1:7)){
+      if(predt>min.followup&predt<max.followup){
+        AUC.NP<-c(AUC.NP,survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3, 
+                                                         subcoh = subcohort, data = df2, estimation.method = "NP", predict.time = predt, 
+                                                         marker.cutpoint = mcut)$estimate[1])
+        
+        #AUC.SP<-c(AUC.SP,survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3, subcoh = subcohort, data = df1, estimation.method = "SP", predict.time = predt, marker.cutpoint = mcut)$estimate[2])
+        
+      }else{
+        AUC.NP<-c(AUC.NP,NA)
+        #AUC.SP<-c(AUC.SP,NA)
+      }
+      
+      
+      
+    } 
+    
+    AUC.NPt<-cbind(AUC.NPt,AUC.NP)
+    #AUC.SPt<-cbind(AUC.SPt,AUC.SP)
+    
+    
+    print('a')
+    
+    #TPRlist[[seedno]]<-TPRALL
+    #FPRlist[[seedno]]<-FPRALL
+    #PPVlist[[seedno]]<-PPVALL
+    #NPVlist[[seedno]]<-NPVALL
+    TPRALL = NULL
+    FPRALL = NULL
+    PPVALL = NULL
+    NPVALL = NULL
+    
+    TPR.year.list = NULL
+    FPR.year.list = NULL
+    
+    for (year in 1:7) {
+      combined.df.list = list()
+      mean.auc.df.list = list()
+      for (fold in 1:10 ){
+        if (fold <= length(TPRALL.list) ) {
+          if (sum(is.na(TPRALL.list[[fold]][,year])) == 0 & length(TPRALL.list[[fold]]) > 0 ) {
+            
+            print(fold)
+            targ.df.tpr=  TPRALL.list[[fold]][,year]
+            targ.df.tpr = targ.df.tpr[order(targ.df.tpr)]
+            
+            targ.df.fpr=  FPRALL.list[[fold]][,year]
+            targ.df.fpr = targ.df.fpr[order(targ.df.fpr)]
+            
+            combined.df.list[[fold]] =data.frame(fpr = round(targ.df.fpr,digits =3), tpr = round(targ.df.tpr,digits = 3),seed = cur.seed)
+            test =incr.count(combined.df.list[[fold]])
+            test$fpr_mean = round(test$fpr_mean, digits =3)
+            test$tpr_mean = round(test$tpr_mean, digits =3)
+            
+            tmp.return  =   ddply(test, c('fpr_mean','seed'), numcolwise(max))
+            tmp.return$fold = fold
+            mean.auc.df.list[[fold]] = tmp.return[order(tmp.return$fpr_mean),]
+            mod.fpr = tmp.return[order(tmp.return$fpr_mean),]$fpr_mean
+          }  else {
+            tmp.return  =  NULL
+            mean.auc.df.list[[fold]] = NULL
+          }
+          
+        } else {
+          tmp.return  =  NULL
+          mean.auc.df.list[[fold]] = NULL
+        }
+        
+      }
+      #fpr.tmp.df = rowMeans(do.call('cbind',lapply(FPRALL.list, function(x) x[,year])))
+      #tpr.tmp.df = rowMeans(do.call('cbind',lapply(TPRALL.list, function(x) x[,year])))
+      
+      
+      if (length(mean.auc.df.list) >0) {
+        mean.tpr = rowMeans(do.call('cbind', lapply(mean.auc.df.list, function(x) x$tpr_mean )),na.rm=T)
+        TPR.year.list[[year]] = mean.tpr
+        FPR.year.list[[year]] = mod.fpr
+        
+      } else {
+        TPR.year.list[[year]] = NULL
+        FPR.year.list[[year]] = NULL
+      }
+      
+    }
+    
+    TPRALL = do.call('cbind',TPR.year.list)
+    FPRALL = do.call('cbind',FPR.year.list)
+    
+    return.list = list(TPRALL = TPRALL, FPRALL = FPRALL, Seed = cur.seed, conc1 = conc1, y.test.merge = y.test.merge, lpred.merge = lpred.merge, AUC.NPt = AUC.NPt,AUC.NPavgs = AUC.NPavgs, AUC.NPavgt = AUC.NPavgt) 
+    
+    #TPRALL = TPRALL, FPRALL = FPRALL,
+  },mc.cores = core.number)  #maxseed
+  end = Sys.time()
+  
+  print('complete')
+  #median test concordance
+  foldno = 1
+  conc1<-NULL
+  y.test.merge<-NULL
+  lpred.merge<-NULL
+  AUC.NPavgt<-NULL
+  ml_performance_riskscores = tmp_list.mean[[1]]
+  
+  #samples_df_folds = sample_info
+  samples_df_folds = readRDS(paste0(sample_info_dir, 'brca.predx.sample.split.seed.97.RDS')) #sample information + fold pslits
+  samples_df_folds = samples_df_folds[samples_df_folds$GRP_Id %in% ml_performance_riskscores$GRP_Id,]
+  
+  samples_df_folds$group = ifelse(samples_df_folds$Cancer == 'control','control','breast_cancer')
+  matched_samples<-samples_df_folds
+  
+  fold_temp<-samples_df_folds[match(ml_performance_riskscores$GRP_Id,samples_df_folds$GRP_Id),]
+  fold_temp$GRP_Id==ml_performance_riskscores$GRP_Id
+  fold_temp$group = ifelse(fold_temp$Cancer == 'control','control','breast_cancer')
+  y.test=Surv(time=abs(fold_temp$censorship_time),event=fold_temp$group!="control") #time-to-event outcome
+  rownames(y.test)<-fold_temp$GRP_Id
+  rownames(y.test)==ml_performance_riskscores$GRP_Id
+  matched_samples = matched_samples[matched_samples$GRP_Id %in% ml_performance_riskscores$GRP_Id,]
+  
+  weights2<-weightsf(ml_performance_riskscores$GRP_Id, matched_samples)
+  
+  linear.pred_lasso.nofilt<-ml_performance_riskscores$methylation_score
+  
+  concw<-round(survConcordance(y.test ~ linear.pred_lasso.nofilt,weights=weights2)$concordance, digits =3)
+  conc1<-c(conc1,concw)
+  
+  lpred.merge<-c(lpred.merge,ml_performance_riskscores$methylation_score)
+  y.test.merge<-rbind(y.test.merge,cbind(y.test))
+  
+  head(df1<-data.frame(cbind(time1<-y.test[,1],event1<-y.test[,2],weights<-weights2,marker1<-linear.pred_lasso.nofilt)))
+  df1$subcohort<-1
+  #df1$X3<-1
+  #df1$X4<-runif(length(yy[,1]),-1,5)
+  #head(df1)
+  survConcordance(Surv(df1$X1,df1$X2) ~ df1$X4, weights=df1$X3)$concordance
+  
+  mcut<-median(df1$X4)
+  AUC.NP<-NULL
+  AUC.SP<-NULL
+  AUC.NPavg<-NULL
+  max.followup<-max(df1$X1)-1
+  min.followup<-min(df1$X1)+1
+  
+  for(predt in seq1){
+    if(predt>min.followup&predt<max.followup){
+      AUC.NPavg<-c(AUC.NPavg,survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3,subcoh = subcohort, data = df1, estimation.method = "NP", predict.time = predt, marker.cutpoint = mcut)$AUC.NP.adj)
+    }else{
+      AUC.NPavg<-c(AUC.NPavg,NA)
+    }
+  }
+  AUC.NPavgt<-cbind(AUC.NPavgt,AUC.NPavg)
+  
+  concCV.medtest<-conc1
+  #AUC.NPavgs<-cbind(AUC.NPavgs,apply(AUC.NPavgt,1,FUN=function(x){mean(as.numeric(x),na.rm=T)}))
+  
+  
+  #weights2<-weightsf(rownames(y.test.merge), matched_samples)
+  #concCV.merge1<-survConcordance(Surv(y.test.merge) ~ lpred.merge,weights=weights2)$concordance
+  #concCV.merge.mediantest<-concCV.merge1
+  
+  
+  
+  head(df1<-data.frame(cbind(time1<-y.test.merge[,1],event1<-y.test.merge[,2],weights<-weights2,marker1<-lpred.merge)))
+  df1$subcohort<-1
+  #df1$X3<-1
+  #df1$X4<-runif(length(yy[,1]),-1,5)
+  #head(df1)
+  survConcordance(Surv(df1$X1,df1$X2) ~ df1$X4, weights=df1$X3)$concordance
+  
+  
+  mcut<-median(df1$X4)
+  AUC.NP<-NULL
+  AUC.SP<-NULL
+  max.followup<-max(df1[df1$X2 == 1,'X1'])-1
+  min.followup<-min(df1[df1$X2 == 1,'X1'])+1
+  #seq1<-seq(min.followup,max.followup,10)
+  
+  for(predt in seq1){
+    if(predt>min.followup&predt<max.followup){
+      AUC.NP<-c(AUC.NP,survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3, 
+                                                       subcoh = subcohort, data = df1, estimation.method = "NP", predict.time = predt, 
+                                                       marker.cutpoint = mcut)$estimate[1])
+    }else{
+      AUC.NP<-c(AUC.NP,NA)
+    }
+  }
+  
+  for(predt in (365.25*1:7)){
+    AUC.SP<-c(AUC.SP,survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3, 
+                                                     subcoh = subcohort, data = df1, estimation.method = "SP", predict.time = predt, 
+                                                     marker.cutpoint = mcut)$estimate[2])
+  } 
+  
+  AUC.NPt.mediantest<-AUC.NP
+  AUC.SPt.mediantest<-AUC.SP
+  
+  
+  
+  method1<-"NP"
+  TPRALL<-NULL
+  FPRALL<-NULL
+  PPVALL<-NULL
+  NPVALL<-NULL
+  for(year in 1:7){
+    
+    print(c(seedno,year))
+    
+    predt<-365.25*year
+    TPR<-NULL
+    FPR<-NULL
+    marker.cut<-median(df1$X4)
+    survMTP1<-survMarkerTwoPhase::survMTP.cch(time = X1, event = X2, marker = X4, weights = X3, 
+                                              subcoh = subcohort, data = df1, estimation.method = method1, predict.time = predt, 
+                                              marker.cutpoint = marker.cut)
+    #print(survMTP1$estimates)
+    TPRALL<-cbind(TPRALL ,survMTP1$roc$TPR)
+    FPRALL<-cbind(FPRALL ,survMTP1$roc$FPR)
+    PPVALL<-cbind(PPVALL ,survMTP1$roc$PPV)
+    NPVALL<-cbind(NPVALL ,survMTP1$roc$NPV)
+  }
+  TPRlist.mediantest<-TPRALL
+  FPRlist.mediantest<-FPRALL
+  PPVlist.mediantest<-PPVALL
+  NPVlist.mediantest<-NPVALL
+  #plotting concordance curve and time dependent AUCs
+  #concw<-survConcordance(y.test ~ linear.pred_lasso.nofilt,weights=weights2)$concordance
+  #conc1<-c(conc1,concw)
+  
+  
+  #conc.avg<-apply(concCVp,2,mean)
+  #conc.avg<-apply(concCVn,2,mean)
+  #conc.avg<-apply(concCVpn,2,mean)
+  #conc.avg<-apply(concCVnn,2,mean)
+  #pred.perf.weighted
+  pred.perf.weighted = pred.perf.weighted[sapply(pred.perf.weighted,length)>1]
+  concCV = do.call('cbind',lapply(pred.perf.weighted, function(x) x$conc1))
+  concCV.merge = do.call('cbind',lapply(pred.perf.weighted, function(x) x$concCV.merge))
+  #AUC.SPt = do.call('cbind',lapply(pred.perf.weighted, function(x) x$AUC.SPt))
+  AUC.NPavgs = do.call('cbind',lapply(pred.perf.weighted, function(x) x$AUC.NPavgs))
+  AUC.NPt = do.call('cbind',lapply(pred.perf.weighted, function(x) x$AUC.NPt))
+  TPRlist = lapply(pred.perf.weighted, function(x) x$TPRALL)
+  FPRlist = lapply(pred.perf.weighted, function(x) x$FPRALL)
+  
+  
+  conc.avg<-apply(concCV,2, function(x) mean(x,na.rm=T) )
+  #mean(conc.avg)
+  #median(conc.avg)
+  #sd(conc.avg)
+  #q#uantile(conc.avg,.025)
+  #quantile(conc.avg,.975)
+  
+  #apply(AUC.NPt,1,FUN<-function(x){mean(as.numeric(x))})
+  #apply(AUC.SPt,1,FUN<-function(x){mean(as.numeric(x))})
+  
+  
+  AUC.NPavgAll<-apply(AUC.NPavgs,1,FUN<-function(x){median(as.numeric(x),na.rm=T)})
+  AUC.NP025All<-apply(AUC.NPavgs,1,FUN<-function(x){quantile(as.numeric(x),.025,na.rm=T)})
+  AUC.NP975All<-apply(AUC.NPavgs,1,FUN<-function(x){quantile(as.numeric(x),.975,na.rm=T)})
+  
+  AUC.NP<-apply(AUC.NPt,1,FUN<-function(x){median(as.numeric(x))})
+  AUC.NP025<-apply(AUC.NPt,1,FUN<-function(x){quantile(as.numeric(x),.025,na.rm=T)})
+  AUC.NP975<-apply(AUC.NPt,1,FUN<-function(x){quantile(as.numeric(x),.975,na.rm=T)})
+  #apply(AUC.SPt,1,FUN<-function(x){median(as.numeric(x))})
+  #apply(AUC.NPt,1,FUN<-function(x){sd(as.numeric(x))})
+  #apply(AUC.SPt,1,FUN<-function(x){sd(as.numeric(x))})
+  
+  
+  
+  
+  tissue<-"Breast"
+  method1="NP"
+  concord<-round(mean(conc.avg),3)
+  concordU<-round(quantile(conc.avg,.975,na.rm=T),3)[[1]]
+  concordL<-round(quantile(conc.avg,.025,na.rm=T),3)[[1]]
+  concordance.df = data.frame(futime = seq1, AUC.NPavgAll = AUC.NPavgAll, cil = AUC.NP025All, cir = AUC.NP975All)
+  concordance.df.mediantest = data.frame(futime = seq1, AUC.NPavgAll = unlist(AUC.NPt.mediantest), cil =  unlist(AUC.NPt.mediantest), cir =  unlist(AUC.NPt.mediantest))
+  concordance.df.mediantest = concordance.df.mediantest[concordance.df.mediantest$futime < 365*7,]
+  concordance.df.mediantest$year = concordance.df.mediantest$futime/365
+  #library(reshape2)
+  concordance.df.melt= reshape2::melt(concordance.df,id.vars = 'futime')
+  concordance.df = concordance.df[concordance.df$futime < 365*7,]
+  concordance.df$year = concordance.df$futime/365
+  concordance.df =concordance.df[concordance.df$futime >= fu.ind+100,]
+  pdf(paste0(file_name,tissue,"_time_AUC_CV_",method1,'fu',fu.ind,".pdf"),height = 4, width = 4)
+  plot = ggplot(concordance.df[concordance.df$futime >= fu.ind+100,], aes(ymin = cil,ymax=cir,x = year),fill = '#619B8A') + 
+    geom_ribbon(fill = '#619B8A',alpha = 0.5) + 
+    geom_line(aes(y = AUC.NPavgAll),size = 1, col = '#273F38') +
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,7), expand = c(0, 0), breaks = seq(0,7,1)) +
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'bottom',
+          legend.title = element_blank(),
+          axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold")) +
+    ggtitle(paste('Concordance','(95% CI) = ',concord,' (',concordL,',',concordU,')','\n Median Test C = ',round( mean(unlist(AUC.NPt.mediantest),na.rm=T),digits = 3))) +
+    xlab('Time (Years)') + 
+    ylab('AUC(t)') + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  
+  pdf(paste0(file_name,tissue,"_time_AUC_CV_",method1,'fu',fu.ind,"nomedtest.pdf"),height = 4, width = 4)
+  plot = ggplot(concordance.df[concordance.df$futime >= fu.ind+100,], aes(ymin = cil,ymax=cir,x = year),fill = '#619B8A') + 
+    geom_ribbon(fill = '#619B8A',alpha = 0.5) + 
+    geom_line(aes(y = AUC.NPavgAll),size = 1, col = '#273F38') +
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,7), expand = c(0, 0), breaks = seq(0,7,1)) +
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'bottom',
+          legend.title = element_blank(),
+          axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold")) +
+    ggtitle(paste('Concordance','(95% CI) = ',concord,' (',concordL,',',concordU,')','\n Median Test C = ',round( mean(unlist(AUC.NPt.mediantest),na.rm=T),digits = 3))) +
+    xlab('Time (Years)') + 
+    ylab('AUC(t)')# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
 }
-sens.calc= function(plot_list, file_name = 'performance_auc',dir = figdir, st,auc_summary.df,sample_info, core.number,foldno = 2) {
-  incr.count = function(x) {
 
+mean.bs.auc.plot.fun = function(complete_list, file_name = 'performance.smooth',foldno = 10) {
+  complete.cv.auc = do.call('rbind',complete_list)
+  
+  
+  complete.cv.auc.averaged = ddply(complete.cv.auc[,c('GRP_Id','reported','methylation_score')],c('GRP_Id','reported'),numcolwise(mean))
+  
+  
+  library(pROC)
+  
+  # this is how the TPR and TNR rates over all possible thresholds could look like (showing some data from around middle):
+  
+  #
+  
+  ###averagedscores##
+  auc.dist = list('average' = complete.cv.auc.averaged,'all'=complete.cv.auc)
+  return.perf = NULL
+  for (dist in names(auc.dist)) {
+    boot.score.mean = boot.roc(auc.dist[[dist]]$methylation_score, (ifelse(auc.dist[[dist]]$reported == 'cancer',T,F)), stratify = TRUE, 
+                               n.boot = 1000,use.cache = T)
+    boot.score.mean.roc = perf(boot.score.mean, metric = "auc", conf.level = 0.95,
+                               fpr = 0.001, correct.partial.auc = TRUE, show.partial.auc.warning = TRUE)
+    
+    result.boot = boot.score.mean
+    combined.ci = conf(result.boot, steps = 1000)
+    
+    plot =  ggplot(combined.ci, aes(x=FPR, ymax =Upper.TPR,ymin = Lower.TPR ))+ theme_bw() + 
+      #geom_vline(xintercept = 0.05, linetype = "longdash") + 
+      scale_x_continuous(limits = c(0,1.01), expand= c(0,0),breaks = seq(0,1,0.1))+
+      scale_y_continuous(limits = c(0,1), expand= c(0,0),breaks = seq(0,1,0.1))+
+      #geom_line()+
+      geom_ribbon(alpha = 0.5,fill = '#619B8A')+
+      theme_bw() + 
+      ylab('True Positive Rate') + 
+      xlab('False Positive Rate') + 
+      theme(text = element_text(size=6),axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"),legend.position = "none")+
+      scale_color_manual(values = col)#
+    test.avg = NULL 
+    test.avg$mean.auc.all =round(boot.score.mean.roc$Observed.Performance,digits =3)
+    test.avg$ci.upper = round(boot.score.mean.roc$CI.Performance[2],digits =3)
+    test.avg$ci.lower = round(boot.score.mean.roc$CI.Performance[1],digits=3)
+    test.avg$sens.90 = round(max(combined.ci[combined.ci$FPR <= 0.1, 'TPR']),digits = 3)
+    test.avg$sens.90.ciu = round(max(combined.ci[combined.ci$FPR <= 0.1, 'Upper.TPR']),digits = 3)
+    test.avg$sens.90.cil = round(max(combined.ci[combined.ci$FPR <= 0.1, 'Lower.TPR']),digits = 3)
+    test.avg$sens.95 = round(max(combined.ci[combined.ci$FPR <= 0.05, 'TPR']),digits = 3)
+    test.avg$sens.95.ciu = round(max(combined.ci[combined.ci$FPR <= 0.05, 'Upper.TPR']),digits = 3)
+    test.avg$sens.95.cil = round(max(combined.ci[combined.ci$FPR <= 0.05, 'Lower.TPR']),digits = 3)
+    
+    plot = plot + geom_line(data = combined.ci, aes(x=FPR, y = TPR), size = 1, col = '#273F38') +   ggtitle(paste0(test.avg$mean.auc.all, ' (', test.avg$ci.lower, '-',test.avg$ci.upper,')',' sens.90 = ', test.avg$sens.90,'(', test.avg$sens.90.cil,'-', test.avg$sens.90.ciu,') \n sens.95 = ', test.avg$sens.95,'(', test.avg$sens.95.cil,'-', test.avg$sens.95.ciu,')')) 
+    #plot = plot + geom_line(data = test.ciu, aes(x = fpr_mean,y = tpr_mean))
+    #plot = plot + geom_line(data = test.cil, aes(x = fpr_mean,y = tpr_mean))
+    pdf(paste0(file_name,dist,'.scores.bootstrap.ROC.pdf'), height = 4, width = 4)
+    
+    print(plot)
+    dev.off()
+    test.avg$auc.calc = dist
+    return.perf = rbind(return.perf,data.frame(test.avg))
+  }
+  colnames(return.perf) = c('AUC','AUC.U','AUC.L','Sens.90','Sens.90.U','Sens.90.L','Sens.95','Sens.95.U','Sens.95.L','score.format')
+  return(return.perf)
+  
+}
+
+mean.cv.auc.plot.fun = function(complete_list, file_name = 'performance.smooth',foldno=10){
+  incr.count = function(x) {
+    #print(x$seed[1])
     tmp.df = x
     tmp.df = tmp.df[order(tmp.df$fpr, tmp.df$tpr),]
     tmp.df$fpr = round(tmp.df$fpr, digits =3)
     tmp.df$tpr = round(tmp.df$tpr, digits =3)
-
-    return_df = NULL
+    #tmp.df = ddply(numcolwise(max))
+    return_df = data.frame(tpr_mean = 0, fpr_mean= 0, seed = x$seed[1])
     for (i in 2:nrow(tmp.df)) {
-
+      #print(i)
       start_fpr = tmp.df$fpr[i-1]
       end_fpr = tmp.df$fpr[i]
       
@@ -791,503 +1655,305 @@ sens.calc= function(plot_list, file_name = 'performance_auc',dir = figdir, st,au
     }
     return(return_df)
   }
-  fu.times = 365*c(0)
-  tissue<-st[1]
-  for (fu.ind in fu.times) {
+  
+  
+  tmp_list = complete_list
+  auc_list.combined = list()
+  
+  for (i in 1:(length(tmp_list)/foldno)) { #length(tmp_list )
+    print(i)
+    colors = rev(hcl.colors(50, palette='Purple-Yellow'))
+    start_ind = 1+ ((i-1)*foldno)
+    end_ind = i*10
+    tmp = tmp_list[start_ind:end_ind]
+    tmp.combined= do.call('rbind',tmp)
+    tmp.combined = tmp.combined[order(-tmp.combined$methylation_score),]
     
-    
-    #performance across iteratison
-    tmp = lapply(plot_list, function(x) {
-      tmp1 = merge(x[,c('GRP_Id','methylation_score','reported','predictions')], sample_info[,c('GRP_Id','Age','Diagnosis_Time')], by = 'GRP_Id')
-
-      return(tmp1)
-    } )
-    seeds = unlist(lapply(seq(1:c(length(plot_list)/foldno)),function(x) rep(x, 10) ))
-    for (i in 1:length(tmp)) { 
-      if (nrow(tmp[[i]]) > 0) { 
-        tmp[[i]]$seed = seeds[i]}
-    }
-    tmp.auc = auc_calc.seed(tmp)
-    tmp.seed.average = ddply(tmp.auc, 'seed',numcolwise(mean))
-    
-    perf.df = NULL
-    j = 1
-    perf.list= lapply(seq(1:200), function(j) {
-      set.seed(j)
-      for (i in 1:nrow(tmp.seed.average)) {
-        selected.samples = tmp.seed.average[sample(x = seq(1:nrow(tmp.seed.average)), i),]
-        tmp.df = data.frame(n = i, auroc_mean = mean(selected.samples$auroc),seed = j)
-        perf.df = rbind(perf.df, tmp.df)
-      }
-      return(perf.df)
-    }  )
-    
-    perf.iteration.df = do.call('rbind',perf.list)
-    perf.iteration.df.split = split(perf.iteration.df, perf.iteration.df$n)
-    perf.iteration.df.split = lapply(perf.iteration.df.split, function(x) data.frame(n = x$n[1], mean = mean(x$auroc_mean), ci.l = confidence_interval(x$auroc_mean)[1], ci.u = confidence_interval(x$auroc_mean)[2]))
-    combined.iteration.perf = do.call('rbind',perf.iteration.df.split)
-    pdf(paste0(tissue,"_perfiteration_AUC_CV.pdf"),height = 4, width = 4)
-    plot = ggplot(combined.iteration.perf, aes(ymin = ci.l,ymax=ci.u,x = n),fill = '#5A7684') + 
-      geom_ribbon(fill = '#619B8A',alpha = 0.5) + 
-      geom_line(aes(y = mean),size = 1, col = '#273F38') +
-      theme_bw()+
-      scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
-      scale_x_continuous(limits = c(min(combined.iteration.perf$n),max(combined.iteration.perf$n )), expand = c(0, 0), breaks = seq(min(combined.iteration.perf$n),max(combined.iteration.perf$n),50)) +
-      theme(text = element_text(size=6),
-            axis.ticks.y = element_blank(),
-            axis.ticks.x = element_blank(),
-            legend.position = 'bottom',
-            legend.title = element_blank(),
-            axis.text=element_text(size=12),
-            axis.title=element_text(size=14,face="bold")) +
-      xlab('Number of repeats') + 
-      ylab('Mean AUC') + ggtitle(round(combined.iteration.perf$mean[nrow(combined.iteration.perf)],digits = 3))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
-    print(plot)
-    #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
-    dev.off()
-    
-    
-    
-    #all auc
-    sample_info.filt = sample_info
-    targ.ids = unique(do.call('rbind',plot_list)$GRP_Id)
-    targ.ids= targ.ids[targ.ids %in% sample_info.filt$GRP_Id]
-    
-    tmp_list = lapply(plot_list, function(x){
-      tmp = x[x$GRP_Id %in% targ.ids,]
-      tmp = tmp[-tmp$methylation_score,]
-      
-      tmp$STATUS  = tmp$reported
-      tmp$PRED_CLASS = tmp$predictions
-      return(tmp)
-    }  )
-    auc_all = lapply(tmp_list, function(dat)  {
-      prauc <- function(dat) {
-        x <- dat@x.values[[1]]
-        y <- dat@y.values[[1]]
-        idx <- which(is.nan(y))
-        if (any(idx)) {
-          x <- x[-idx]
-          y <- y[-idx]
-        }
-        return(pracma::trapz(x, y))
-      }
-      if(nrow(dat[dat$STATUS == st[1],]) > 1 & nrow(dat[dat$STATUS == st[2],]) > 1) {
-        pred <- ROCR::prediction(dat$methylation_score, dat$STATUS == 
-                                   st[1])
-        c1 <- st[1]
-        tp <- sum(dat$STATUS == dat$PRED_CLASS & dat$STATUS == 
-                    c1)
-        tn <- sum(dat$STATUS == dat$PRED_CLASS & dat$STATUS != 
-                    c1)
-        fp <- sum(dat$STATUS != dat$PRED_CLASS & dat$STATUS != 
-                    c1)
-        fn <- sum(dat$STATUS != dat$PRED_CLASS & dat$STATUS == 
-                    c1)
-        curRoc <- ROCR::performance(pred, "tpr", "fpr")
-        curPr <- ROCR::performance(pred, "prec", "rec")
-        auroc <- performance(pred, "auc")@y.values[[1]]
-        aupr <- prauc(curPr)
-        return_df = data.frame(auroc = auroc, aupr = aupr)
-        return(return_df)
-      } else {
-        return(NULL)
-      }
-      
-      
-    })
-    
-    auc_all_df = do.call('rbind',auc_all)
-    
-    average.auc = NULL
-    
-    #ROC curve binary
-    if (nrow(auc_all_df) > 1) {
-      ci_auc = round(confidence_interval(auc_summary.df$average_auroc), digits =3)
-      auc_summary = auc_summary.df$average_auroc
-      mean.auc.all = round(mean(auc_summary),digits =3)
-      median_auc = round(auc_summary[order(auc_summary)][round(length(auc_summary)/2)],digits = 3)
-      median_auc_ind = auc_summary.df[round(auc_summary.df$average_auroc, digits = 3) == median_auc,'seed'][1]
-      
-      print(median_auc)
-      auc_list = list()
-      auc_list.raw = list()
-      auc_list.combined = list()
-      auc.mean.scores = list()
-      for (i in 1:(length(tmp_list)/foldno)) {
-        print(i)
-        colors = rev(hcl.colors(50, palette='Purple-Yellow'))
-        start_ind = 1+ ((i-1)*foldno)
-        end_ind = i*foldno
-        cv.average = auc_all[start_ind:end_ind]
-        cv.average = do.call('rbind',cv.average)
-        cv.average.df = data.frame(auc = mean(cv.average$auroc), seed = i)
-        auc.mean.scores[[i]] = cv.average.df
-        tmp = tmp_list[start_ind:end_ind]
-        tmp.combined= do.call('rbind',tmp)
-        tmp.combined = tmp.combined[order(-tmp.combined$methylation_score),]
-        
-        tpr.fpr.calc = function(x){
-          tmp1 = x
-          tmp1$f = as.integer(ifelse(tmp1$STATUS == st[2], 0, 1))
-          tmp1$f.str = tmp1$reported
-          
-          tmp1 = tmp1[order(-tmp1$methylation_score),]
-          case_no = nrow(tmp1[tmp1$STATUS!=st[2],])
-          control_no = nrow(tmp1[tmp1$STATUS==st[2],])
-          auc.df =data.frame(matrix(nrow = 0, ncol=3))
-          for(l in 1:nrow(tmp1)) {
-            x = tmp1[1:l,]
-            case_cum = nrow(x[x$STATUS!=st[2],])
-            control_cum = nrow(x[x$STATUS==st[2],])
-            tpr = case_cum/case_no
-            fpr = control_cum/control_no
-            return.tmp = data.frame(l,tpr,fpr)
-            auc.df = rbind(auc.df, return.tmp)
-          }
-          return(auc.df)
-          #auc.df = auc.df[auc.df$fpr > 0,]
-        }
-        auc.df_list.combined  = tpr.fpr.calc(tmp.combined)
-        auc.df_list.combined$seed = i
-        auc.df_list.combined$median = F
-        auc.df_list.combined = incr.count(auc.df_list.combined)
-        auc = function(tmp.combined) {
-          tmp = tmp.combined
-          tmp = tmp[order(-tmp$methylation_score),]
-          labels = as.character(tmp$reported)
-          pred = prediction(predictions = c(tmp$methylation_score) ,labels =  labels, label.ordering = rev(st))
-          perf_AUC=performance(pred,"auc") #Calculate the AUC value
-          AUC=perf_AUC@y.values[[1]]
-          return(AUC)
-        }
-        
-        auc.df_list.combined$auc= auc(tmp.combined)
-        auc.df_list = lapply(tmp, function(x){
-          tmp1 = x
-          tmp1$f = as.integer(ifelse(tmp1$STATUS == st[2], 0, 1))
-          tmp1$f.str = tmp1$reported
-          
-          tmp1 = tmp1[order(-tmp1$methylation_score),]
-          case_no = nrow(tmp1[tmp1$STATUS!=st[2],])
-          control_no = nrow(tmp1[tmp1$STATUS==st[2],])
-          auc.df =data.frame(matrix(nrow = 0, ncol=3))
-          if (case_no > 0 & control_no > 0 & sum(case_no,control_no) > 2 ) {
-            for (l in 1:nrow(tmp1)) {
-              x = tmp1[1:l,]
-              case_cum = nrow(x[x$STATUS!=st[2],])
-              control_cum = nrow(x[x$STATUS==st[2],])
-              tpr = case_cum/case_no
-              fpr = control_cum/control_no
-              return.tmp = data.frame(l,tpr,fpr)
-              auc.df = rbind(auc.df, return.tmp)
-            }
-            auc.df$seed = i
-            tmp.df= data.frame(0,0,0,i)
-            colnames(tmp.df) = colnames(auc.df)
-            auc.df = rbind(tmp.df, auc.df)
-          } else {
-            tmp.df= NULL
-          }
-          
-          
-          return(auc.df)
-
-        } )
-        auc.df_list = auc.df_list[sapply(auc.df_list,nrow) > 0]
-        auc.df_list = lapply(auc.df_list, function(x) incr.count(x))
-        auc.df_list = lapply(auc.df_list, function(x) ddply(x, c('seed','fpr_mean'), numcolwise(max)))
-        auc.df_list = lapply(auc.df_list, function(x) {
-          t = x
-          t$fpr_mean = as.character(t$fpr_mean)
-          return(t)
-        })
-        null.ind = sapply(auc.df_list, is.null)
-        auc.df_list = auc.df_list[!null.ind]
-        auc.df = auc.df_list[[1]][,c('fpr_mean','tpr_mean')]
-        if (length(auc.df_list) > 1) {
-          for (m in 2:length(auc.df_list)) {
-            auc.df = merge(auc.df, auc.df_list[[m]][,c('fpr_mean','tpr_mean')], by = 'fpr_mean', all = T)
-          }
-          auc.df$tpr_mean = rowMeans(auc.df[,-1],na.rm = T)
-          
-        }
-        
-        auc.df$fpr_mean = as.numeric(auc.df$fpr_mean)
-        auc.df = auc.df[,c('fpr_mean','tpr_mean')]
-        auc.df = rbind( data.frame(tpr_mean = 0 , fpr_mean = 0),auc.df)
-        
-        auc.df = auc.df[order(auc.df$fpr_mean),]
-        auc.df.new = auc.df
-        auc.df.raw = auc.df
-        auc.df.raw$seed = i
-        auc.df.raw$auc = cv.average.df$auc
-        auc.df$seed = i
-        auc.df$median = F
-        auc.df$auc = cv.average.df$auc
-        
-        auc_list[[i]] = auc.df
-        auc_list.raw[[i]] = auc.df.raw
-        auc_list.combined[[i]] = auc.df_list.combined
-      }
-      auc_list.combined.incr = mclapply(auc_list.combined, function(x) {
-        tmp1 = ddply(x,c('fpr_mean','seed','auc'),numcolwise(max))
-        tmp1 = incr.count(tmp1)
-        return(tmp1)
-      } ,mc.cores = core.number)
-      auc.cv.combined.df= do.call('rbind',auc_list.combined.incr)
-      auc.combined.df = do.call('rbind',auc_list.combined) #
-      mean_auc.combined = ddply(auc.combined.df[,c('tpr_mean','fpr_mean')], c('fpr_mean'), numcolwise(mean))
-      auc.df = do.call('rbind',auc_list) #indv fold performnace average per cv iteration
-      
-      #
-      auc.scores = do.call('rbind',auc.mean.scores)
-      ci_auc = round(confidence_interval(auc.scores$auc), digits =3)
-      auc_summary = auc.scores$auc
-      mean.auc.all = round(mean(auc_summary),digits =3)
-      median_auc = round(auc_summary[order(auc_summary)][round(length(auc_summary)/2)],digits = 3)
-      median_auc_ind = auc_summary.df[round(auc_summary.df$average_auroc, digits = 3) == median_auc,'seed'][1]
-      #
-      mean_auc = ddply(auc.df[,c('tpr_mean','fpr_mean')], c('fpr_mean'), numcolwise(mean))
-      mean_auc$seed = 0
-      mean_auc$auc = mean(auc.df$auc)
-      mean_auc = mean_auc[order(mean_auc[,2],mean_auc[,3]),]
-      mean_auc$median = T
-      auc.df.raw = do.call('rbind',auc_list.raw)
-      mean_auc.raw = ddply(auc.df.raw[,c('tpr_mean','fpr_mean')], c('fpr_mean'), numcolwise(mean))
-      auc.df.raw$median = F
-      mean_auc.raw$seed = 0
-      mean_auc.raw$auc = mean(auc.df$auc)
-      mean_auc.raw = mean_auc.raw[order(mean_auc.raw[,2],mean_auc.raw[,3]),]
-      mean_auc.raw$median = T
-      auc.df = rbind(auc.df, mean_auc)
-      auc.df.raw = rbind(auc.df.raw, mean_auc.raw)
-      uni_seed = unique(auc.df[,c('seed','median','auc')])
-      col = sapply(uni_seed$auc, function(x){
-        auc_round = round(x*100, digits = 0)
-        col = colors[max(round(auc_round)-50, 1)]
-        return(col)
-      } )
-      col[median_auc_ind] = 'black'
-      auc.df$seed = as.character(auc.df$seed)
-      #
-
-      test = ddply(auc.df.raw[,c('tpr_mean','fpr_mean','seed')],c('fpr_mean','seed'), numcolwise(mean))
-      test$tpr_mean = round(test$tpr_mean, digits = 3 )
-      test$fpr_mean = round(test$fpr_mean, digits = 3 )
-      test.count = ddply(test[,c('tpr_mean','fpr_mean')],c('fpr_mean'), numcolwise(sum))
-      test.avg = ddply(test[,c('tpr_mean','fpr_mean')], c('fpr_mean'), numcolwise(mean,na.rm = T))
-      test.ciu = ddply(test[,c('tpr_mean','fpr_mean')], c('fpr_mean'), function(x) (quantile(x$tpr_mean,.975,na.rm=T) ))
-      test.cil = ddply(test[,c('tpr_mean','fpr_mean')], c('fpr_mean'), function(x) (quantile(x$tpr_mean,.025,na.rm=T) ))
-      
-      combined.ci = merge(test.ciu, test.cil, by = 'fpr_mean')
-      colnames(test.ciu)[2] = 'tpr_mean'
-      colnames(test.cil)[2] = 'tpr_mean'
-      colnames(combined.ci) = c('fpr_mean','ci.upper','ci.lower')
-      # mean score curve#
-      mean_scores = do.call('rbind',plot_list)
-      mean_scores = ddply(mean_scores[,c('GRP_Id','methylation_score')], 'GRP_Id', numcolwise(mean))
-      mean_scores = mean_scores[order(-mean_scores$methylation_score),]
-      mean_scores = merge(mean_scores,combined_list[[1]][,c('GRP_Id','reported')],by = 'GRP_Id')
-      mean_scores$reported = factor(as.character(mean_scores$reported), levels = rev(st))
-      tmp.list = list(mean_scores)
-      mean_scores = mean_scores[order(-mean_scores$methylation_score),]
-      auc = auc_calc(tmp.list)
-      auc = data.frame(average_auroc = auc[1], seed = 0)
-      auc$subtype ='all'
-      
-      colnames(auc) = c('average_auroc','seed')
-      mean_scores.list = list(mean_scores)
-      tmp_list.mean = lapply(mean_scores.list, function(x){
-        tmp = x[order(-x$methylation_score),]
-        tmp$STATUS  = tmp$reported
-        tmp$PRED_CLASS = tmp$predictions
-        return(tmp)
-      }  )
-      auc_all.mean = lapply(tmp_list.mean, function(dat)  {
-        prauc <- function(dat) {
-          x <- dat@x.values[[1]]
-          y <- dat@y.values[[1]]
-          idx <- which(is.nan(y))
-          if (any(idx)) {
-            x <- x[-idx]
-            y <- y[-idx]
-          }
-          return(pracma::trapz(x, y))
-        }
-        if(nrow(dat[dat$STATUS == st[1],]) > 1) {
-          pred <- ROCR::prediction(dat$methylation_score, dat$STATUS == 
-                                     st[1])
-          c1 <- st[1]
-          tp <- sum(dat$STATUS == dat$PRED_CLASS & dat$STATUS == 
-                      c1)
-          tn <- sum(dat$STATUS == dat$PRED_CLASS & dat$STATUS != 
-                      c1)
-          fp <- sum(dat$STATUS != dat$PRED_CLASS & dat$STATUS != 
-                      c1)
-          fn <- sum(dat$STATUS != dat$PRED_CLASS & dat$STATUS == 
-                      c1)
-          curRoc <- ROCR::performance(pred, "tpr", "fpr")
-          curPr <- ROCR::performance(pred, "prec", "rec")
-          auroc <- performance(pred, "auc")@y.values[[1]]
-          aupr <- prauc(curPr)
-          return_df = data.frame(auroc = auroc, aupr = aupr)
-          return(return_df)
-        } else {
-          return(NULL)
-        }
-        
-        
-      })
-      
-      auc_all_df = do.call('rbind',auc_all.mean)
-      
-      auc_summary = auc$average_auroc
-      median_auc = round(auc$average_auroc[1], digits = 3)
-      median_auc_ind = auc[round(auc$average_auroc, digits = 3) == median_auc,'seed'][1]
-      #median test score aucs
-      tmp1= tmp_list.mean[[1]]
-      tmp1$f = as.integer(ifelse(tmp1$STATUS == st[2], 0, 1))
+    tpr.fpr.calc = function(x){
+      tmp1 = x
+      tmp1$f = as.integer(ifelse(tmp1$reported == st[2], 0, 1))
       tmp1$f.str = tmp1$reported
       
       tmp1 = tmp1[order(-tmp1$methylation_score),]
-      mean.test.auc = auc_calc(list(tmp1))
-      case_no = nrow(tmp1[tmp1$STATUS!=st[2],])
-      control_no = nrow(tmp1[tmp1$STATUS==st[2],])
+      case_no = nrow(tmp1[tmp1$reported!=st[2],])
+      control_no = nrow(tmp1[tmp1$reported==st[2],])
       auc.df =data.frame(matrix(nrow = 0, ncol=3))
       for(l in 1:nrow(tmp1)) {
         x = tmp1[1:l,]
-        case_cum = nrow(x[x$STATUS!=st[2],])
-        control_cum = nrow(x[x$STATUS==st[2],])
+        case_cum = nrow(x[x$reported!=st[2],])
+        control_cum = nrow(x[x$reported==st[2],])
         tpr = case_cum/case_no
         fpr = control_cum/control_no
         return.tmp = data.frame(l,tpr,fpr)
         auc.df = rbind(auc.df, return.tmp)
       }
-      
-      test$tpr_mean = round(test$tpr_mean, digits = 3 )
-      test$fpr_mean = round(test$fpr_mean, digits = 3 )
-      test.sens.95.spec = test[test$fpr_mean == '0.05',c('seed','tpr_mean')]
-      colnames(test.sens.95.spec) = c('seed','sens.95')
-      test.sens.99.spec = test[test$fpr_mean == '0.01',c('seed','tpr_mean')]
-      colnames(test.sens.99.spec) = c('seed','sens.99')
-      return.df =merge(test.sens.99.spec,test.sens.95.spec, by = 'seed')
-      return.df$Cancer = st[1]
-      
-      return(return.df)
-      
-      
+      return(auc.df)
+      #auc.df = auc.df[auc.df$fpr > 0,]
     }
+    auc.df_list.combined  = tpr.fpr.calc(tmp.combined)
+    auc.df_list.combined$seed = i
+    
+    auc.df_list.combined = ddply(auc.df_list.combined,c('fpr'),numcolwise(max))
+    auc.df_list.combined = incr.count(auc.df_list.combined)
+    auc.df_list.combined$median = F
+    auc.df_list.combined$auroc = auc_calc(tmp.combined)
+    auc.df_list.combined = ddply(auc.df_list.combined,c('fpr_mean','seed','median','auroc'),numcolwise(max))
+    auc_list.combined[[i]] = auc.df_list.combined
+    
     
   }
+  auc_list.combined.df= do.call('rbind',auc_list.combined)
+  auc_list.combined.mean = ddply(auc_list.combined.df[,c('tpr_mean','fpr_mean','auroc')],c('fpr_mean'),numcolwise(mean))
+  
+  ciu =function(vector) {
+    ordered = vector[order(vector)]
+    lower_bound = round(length(ordered)*0.025)
+    upper_bound = round(length(ordered)*0.975)
+    # Confidence interval as a vector
+    result <- c("upper" = ordered[upper_bound])
+    return(result)
+  }
+  cil =function(vector) {
+    ordered = vector[order(vector)]
+    lower_bound = round(length(ordered)*0.025)
+    upper_bound = round(length(ordered)*0.975)
+    # Confidence interval as a vector
+    result <- c("lower" = ordered[lower_bound])
+    return(result)
+  }
+  auc_list.combined.ciu = ddply(auc_list.combined.df[,c('tpr_mean','fpr_mean','auroc')],c('fpr_mean'),numcolwise(ciu))
+  auc_list.combined.cil = ddply(auc_list.combined.df[,c('tpr_mean','fpr_mean','auroc')],c('fpr_mean'),numcolwise(cil))
+  
+  colnames(auc_list.combined.ciu) = c('fpr','tpr','auroc')
+  colnames(auc_list.combined.cil) = c('fpr','tpr','auroc')
+  colnames(auc_list.combined.mean) =  c('fpr','tpr','auroc')
+  auc_list.combined.ciu$seed = 0
+  auc_list.combined.cil$seed = 0
+  auc_list.combined.mean$seed = 0
+  auc_list.combined.ciu.plot = incr.count(auc_list.combined.ciu)
+  auc_list.combined.cil.plot = incr.count(auc_list.combined.cil)
+  auc_list.combined.mean.plot = incr.count(auc_list.combined.mean)
+  auc_list.combined.mean.plot$tpr.upper = auc_list.combined.ciu.plot$tpr
+  auc_list.combined.mean.plot$tpr.lower = auc_list.combined.cil.plot$tpr
+  
+  
+  
+  plot =  ggplot(auc_list.combined.mean.plot, aes(x=fpr_mean, ymax =tpr.upper,ymin = tpr.lower ))+ theme_bw() + 
+    #geom_vline(xintercept = 0.05, linetype = "longdash") + 
+    scale_x_continuous(limits = c(0,1.01), expand= c(0,0),breaks = seq(0,1,0.1))+
+    scale_y_continuous(limits = c(0,1), expand= c(0,0),breaks = seq(0,1,0.1))+
+    #geom_line()+
+    geom_ribbon(alpha = 0.5,fill = '#619B8A')+
+    theme_bw() + 
+    ylab('True Positive Rate') + 
+    xlab('False Positive Rate') + 
+    theme(text = element_text(size=6),axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"),legend.position = "none")+
+    scale_color_manual(values = col)#
+  test.avg = NULL 
+  test.avg$mean.auc.all =round(auc_list.combined.mean$auroc,digits =3)
+  test.avg$ci.upper = round(auc_list.combined.ciu$auroc,digits =3)
+  test.avg$ci.lower =  round(auc_list.combined.cil$auroc,digits =3)
+  test.avg$sens.90 = round(max(auc_list.combined.mean.plot[auc_list.combined.mean.plot$fpr_mean <= 0.1, 'tpr_mean']),digits = 3)
+  test.avg$sens.90.ciu = round(max(auc_list.combined.mean.plot[auc_list.combined.mean.plot$fpr_mean <= 0.1, 'tpr.upper']),digits = 3)
+  test.avg$sens.90.cil = round(max(auc_list.combined.mean.plot[auc_list.combined.mean.plot$fpr_mean <= 0.1, 'tpr.lower']),digits = 3)
+  test.avg$sens.95 = round(max(auc_list.combined.mean.plot[auc_list.combined.mean.plot$fpr_mean <= 0.05, 'tpr_mean']),digits = 3)
+  test.avg$sens.95.ciu = round(max(auc_list.combined.mean.plot[auc_list.combined.mean.plot$fpr_mean <= 0.05, 'tpr.upper']),digits = 3)
+  test.avg$sens.95.cil = round(max(auc_list.combined.mean.plot[auc_list.combined.mean.plot$fpr_mean <= 0.05, 'tpr.lower']),digits = 3)
+  
+  plot = plot + geom_line(data = auc_list.combined.mean.plot, aes(x=fpr_mean,y = tpr_mean), size = 1, col = '#273F38') +   ggtitle(paste0(test.avg$mean.auc.all, ' (', test.avg$ci.lower, '-',test.avg$ci.upper,')',' sens.90 = ', test.avg$sens.90,'(', test.avg$sens.90.cil,'-', test.avg$sens.90.ciu,') \n sens.95 = ', test.avg$sens.95,'(', test.avg$sens.95.cil,'-', test.avg$sens.95.ciu,')')) 
+  #plot = plot + geom_line(data = test.ciu, aes(x = fpr_mean,y = tpr_mean))
+  #plot = plot + geom_line(data = test.cil, aes(x = fpr_mean,y = tpr_mean))
+  pdf(paste0(file_name,'.mean.cvauc.ROC.pdf'), height = 4.5, width = 4)
+  
+  print(plot)
+  dev.off()
+  return(data.frame(test.avg))
   
 }
-
-#
-wkdir='/Path/to/prediction/output/'
-setwd(wkdir)
+#########
+sample_info = readRDS('sample.information.RDS')
+matrix.raw = readRDS('brca.count_matrix.RDS')
 
 perf_masterlist = list()
 results_list_all = list()
 combined_list = list()
-st = c('breast_cancer','control')
+st = c('cancer','control')
 
-sample_info = readRDS('brca.sample.information.RDS')
-matrix.raw = readRDS('normalised.matrix.RDS')
+wkdir='/output/for/ml/performance/'
+setwd(wkdir)
+#####mean auroc perfo####
+feat.rank = 'rank'
+dmrs = 'deseq2.nb'
+model = 'rf'
 
-#performance summary
-model = c('rf')
-for (mod in 1:length(model )) {
-  setwd(paste0(wkdir,'/',model[mod]))
-  tmpdir = getwd()
- 
-  feature_size = paste0(seq(100,200,25),'.hyper')
-
-  for (feat in 1:length(feature_size)) {
-    setwd(paste0(tmpdir,'/',feature_size[feat],'/performance/'))
-    print(model[mod])
-    print(feature_size[feat])
-    indv_performance = list()
-    average_performnace = list()
-    complete_list = list()
-    combined_list =list()
-    seed.range = c(1:200)
-  
-    for (seedno in seed.range) {
-      file = '.*read.5_seed.seedno_fold.*'
-      targ_file = gsub('seedno',seedno, file)
-      performance_files = list.files(pattern = targ_file)
-      if (length(performance_files) > 0) {
-        fold_perf_list = lapply(performance_files, function(x) {
-          tmp = readRDS(x)
-          tmp$seed = seedno
+mean.auc.perf.overall = NULL
+mean.cv.auc.perf.overall = NULL
+for (t in feat.rank) {
+  for (d in dmrs) {
+    for (mod in 1:length(model)) {
+      results_list_all = list()
+      combined_list = list()
+      setwd(paste0(wkdir,t,'/',d,'/',model[mod]))
+      tmpdir = getwd()
+      feature_size = seq(50,500,50)
+      for (feat in 1:length(feature_size)) {
+        setwd(paste0(tmpdir,'/',feature_size[feat],'/performance/'))
+        print(model[mod])
+        print(feature_size[feat])
+        indv_performance = list()
+        average_performnace = list()
+        complete_list = list()
+        combined_list =list()
+        seed.range = c(1:100)
+        auc_calc = function(prediction_table) {
+          tmp = prediction_table
           tmp = tmp[order(-tmp$methylation_score),]
-          controls = tmp[tmp$reported == st[2],]
-          controlno = nrow(controls)
-          spec.95.score = controls[controlno - round(0.95*controlno),'methylation_score']
-          
-          if (controlno - round(0.99*controlno) == 0) {
-            spec.99.score = controls[controlno - round(0.99*controlno) + 1,'methylation_score']
-          } else {
-            spec.99.score = controls[controlno - round(0.99*controlno),'methylation_score']
-          }
-          
-          
-          cancers = tmp[tmp$reported == st[1],]
-          spec.95.score = nrow(cancers[cancers$methylation_score > spec.95.score,])/nrow(cancers)
-          spec.99.score =  nrow(cancers[cancers$methylation_score > spec.99.score,])/nrow(cancers)
-          
-          tmp$sens.spec.95 = spec.95.score
-          tmp$sens.spec.99 = spec.99.score
-          return(tmp)
-        } )
-        for (i in 1:length(fold_perf_list)) {
-          fold_perf_list[[i]]$fold = gsub('.*seed.','',gsub('_fold.*','',performance_files[i]))
+          tmp$reported = ifelse(as.character(tmp$reported) == 'control','control','breast_cancer')
+          labels = factor(as.character(tmp$reported), levels = c('control','breast_cancer'))
+          pred = prediction(predictions = c(tmp$methylation_score) ,labels =  labels, label.ordering = c('control','breast_cancer'))
+          perf_AUC=performance(pred,"auc") #Calculate the AUC value
+          AUC=perf_AUC@y.values[[1]]
+          return(AUC)
         }
-        indv_performance[[seedno]] = do.call('rbind',lapply(fold_perf_list, function(x) x[1,]))
-        average_performnace[[seedno]] = data.frame(model = model[mod], features = feature_size[feat], average_auroc = mean(indv_performance[[seedno]]$auroc),seed = seedno)
-        combined_list[[seedno]] = do.call('rbind',fold_perf_list)
-        complete_list =c(complete_list, fold_perf_list)
+        for (seedno in seed.range) {
+          file = '.*_seed.seedno_fold.*'
+          targ_file = gsub('seedno',seedno, file)
+          performance_files = list.files(pattern = targ_file)
+          if (length(performance_files) > 1) {
+            fold_perf_list = lapply(performance_files, function(x) {
+              tmp = readRDS(x)
+              tmp$seed = seedno
+              tmp = tmp[order(-tmp$methylation_score),]
+              tmp$auroc = auc_calc(tmp)
+              controls = tmp[tmp$reported == st[2],]
+              controlno = nrow(controls)
+              spec.95.score = controls[controlno - round(0.95*controlno),'methylation_score']
+              
+              if (controlno - round(0.99*controlno) == 0) {
+                spec.99.score = controls[controlno - round(0.99*controlno) + 1,'methylation_score']
+              } else {
+                spec.99.score = controls[controlno - round(0.99*controlno),'methylation_score']
+              }
+              
+              
+              cancers = tmp[tmp$reported == st[1],]
+              spec.95.score = nrow(cancers[cancers$methylation_score > spec.95.score,])/nrow(cancers)
+              spec.99.score =  nrow(cancers[cancers$methylation_score > spec.99.score,])/nrow(cancers)
+              
+              tmp$sens.spec.95 = spec.95.score
+              tmp$sens.spec.99 = spec.99.score
+              return(tmp)
+            } )
+            for (i in 1:length(fold_perf_list)) {
+              fold_perf_list[[i]]$fold = gsub('.RDS','',gsub('.*_fold.','',performance_files[i]))
+            }
+            indv_performance[[seedno]] = do.call('rbind',lapply(fold_perf_list, function(x) x[1,]))
+            average_performnace[[seedno]] = data.frame(model = model[mod], features = feature_size[feat], average_auroc = mean(indv_performance[[seedno]]$auroc),seed = seedno)
+            combined_list[[seedno]] = do.call('rbind',fold_perf_list)
+            complete_list =c(complete_list, fold_perf_list)
+          }
+        }
+        
+        indv_performance = indv_performance[which(sapply(indv_performance,length)>0)]
+        combined_list = combined_list[which(sapply(combined_list,length)>0)]
+        average_performnace =average_performnace[which(unlist(sapply(average_performnace,ncol))>0)]
+        predList = list()
+        featScores = list()
+        
+        
+        results_list_all[[length(results_list_all) + 1]] = do.call('rbind',average_performnace)
+        tmp_perf = data.frame(mean_auc = mean(do.call('rbind', lapply(average_performnace, function(x) x$average_auroc[1]))), model = model[mod], features = feature_size[feat], dmr= d, reads = read, batch = batch, norm = norm, cell.filt = t)
+        perf_masterlist[[length(perf_masterlist) + 1]] = tmp_perf
+        print('plotting ROC')
+        roc.conc_plot_function(complete_list, file_name = 'performance.smooth', dir = getwd(), st , results_list_all[[length(results_list_all)]], sample_info, core.number = detectCores()-2,foldno = foldno,sample_info_dir) 
+        mean.auc.perf = mean.bs.auc.plot.fun(complete_list, file_name = paste0('all.',feat,'.',mod,'.',d,'.features.'))
+        mean.auc.perf$features = feature_size[feat]
+        mean.auc.perf$dmrs =d
+        mean.auc.perf$model = model[mod]
+        mean.auc.perf.overall= rbind(mean.auc.perf.overall,mean.auc.perf)
+        
+        
+        mean.cv.auc.perf = mean.cv.auc.plot.fun(complete_list, file_name = paste0('all.',feat,'.',mod,'.',d,'.features.'))
+        mean.cv.auc.perf$features = feature_size[feat]
+        mean.cv.auc.perf$dmrs =d
+        mean.cv.auc.perf$model = model[mod]
+        mean.cv.auc.perf.overall= rbind(mean.cv.auc.perf.overall,mean.cv.auc.perf)
+        
+        
+        
       }
+      
+      
+      
     }
-    
-    indv_performance = indv_performance[which(sapply(indv_performance,length)>0)]
-    combined_list = combined_list[which(sapply(combined_list,length)>0)]
-    average_performnace =average_performnace[which(unlist(sapply(average_performnace,ncol))>0)]
-    predList = list()
-    featScores = list()
-    
-    
-    results_list_all[[length(results_list_all) + 1]] = do.call('rbind',average_performnace)
-    tmp_perf = data.frame(mean_auc = mean(do.call('rbind', lapply(average_performnace, function(x) x$average_auroc[1]))), model = model[mod], features = feature_size[feat])
-    perf_masterlist[[length(perf_masterlist) + 1]] = tmp_perf
-    roc_plot_function.only(complete_list, file_name = 'performance.smooth', dir = getwd(), st = st, results_list_all[[length(results_list_all)]], sample_info, core.number = detectCores()-2,foldno = 10) 
-
   }
   
 }
 
+mean.auc.perf.overall = mean.auc.perf.overall[order(-mean.auc.perf.overall$Sens.95),]
+mean.cv.auc.perf.overall = unique(mean.cv.auc.perf.overall[order(-mean.cv.auc.perf.overall$sens.95),])
+for (d in dmrs){
+  for (m in model) {
+    mean.auc.perf.overall$count= as.numeric(gsub('.hyper','',mean.auc.perf.overall$features))
+    mean.auc.perf.overall.targ = mean.auc.perf.overall[mean.auc.perf.overall$model == m,]
+    mean.auc.perf.overall.targ = mean.auc.perf.overall.targ[mean.auc.perf.overall.targ$score.format == 'average',]
+    mean.auc.perf.overall.targ = mean.auc.perf.overall.targ[mean.auc.perf.overall.targ$dmrs == d,]
+    pdf(paste0(wkdir,m,'.',d,'.feature.size.bs.auc.performance.pdf'),height = 5, width = 3)
+    plot1 = ggplot(mean.auc.perf.overall.targ,  aes(x=count, y=AUC, ymin=AUC.L, ymax=AUC.U,group = dmrs)) +  #Diagnosis_Time
+      geom_pointrange() + 
+      theme_bw()+
+      theme(text = element_text(size=15),
+            axis.ticks.y = element_blank(),
+            axis.ticks.x = element_blank(),
+            legend.position = 'bottom',
+            legend.title = element_blank()) +
+      xlab('Number of Predictor Regions') + ylab('Mean AUC (95% CI)')+
+      scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2))
+    print(plot1)
+    dev.off()
+    
+    pdf(paste0(wkdir,m,'.',d,'.feature.size.bs.sens90.performance.pdf'),height = 5, width = 3)
+    plot1 = ggplot(mean.auc.perf.overall.targ,  aes(x=count, y=Sens.90, ymin=Sens.90.L, ymax=Sens.90.U,group = dmrs)) +  #Diagnosis_Time
+      geom_pointrange() + 
+      theme_bw()+
+      theme(text = element_text(size=15),
+            axis.ticks.y = element_blank(),
+            axis.ticks.x = element_blank(),
+            legend.position = 'bottom',
+            legend.title = element_blank()) +
+      xlab('Number of Predictor Regions') + ylab('Mean Sensitivity at 90% Specificity (95% CI)')+
+      scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2))
+    print(plot1)
+    dev.off()
+    
+    
+    pdf(paste0(wkdir,m,'.',d,'.feature.size.sen95.auc.performance.pdf'),height = 5, width = 3)
+    plot1 = ggplot(mean.auc.perf.overall.targ,  aes(x=count, y=Sens.95, ymin=Sens.95.L, ymax=Sens.95.U,group = dmrs)) +  #Diagnosis_Time
+      geom_pointrange() + 
+      theme_bw()+
+      theme(text = element_text(size=15),
+            axis.ticks.y = element_blank(),
+            axis.ticks.x = element_blank(),
+            legend.position = 'bottom',
+            legend.title = element_blank()) +
+      xlab('Number of Predictor Regions') + ylab('Mean Sensitivity at 95% Specificity (95% CI)')+
+      scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2))
+    print(plot1)
+    dev.off()
+    
+    
+  }
+}
+avg.score = do.call('rbind',complete_list)[,c('GRP_Id','methylation_score','reported','features')]
+avg.score = ddply(avg.score,c('GRP_Id','reported','features'),numcolwise(mean))
+avg.score = avg.score[order(-avg.score$methylation_score),]
 #AUC across different feature sizes
 overall.performance = do.call('rbind',perf_masterlist)
 overall.performance = overall.performance[order(-overall.performance[,1]),]
 head(overall.performance)
 
-overall.performance$count= as.numeric(gsub('.hyper','',overall.performance$features))
-pdf(paste0(wkdir,'feature.size.auc.performance.pdf'),height = 5, width = 5)
-plot1 = ggplot(overall.performance, aes(x = count, y= mean_auc)) +  #Diagnosis_Time
-  geom_point() + geom_line()+
-  theme_bw()+
-  theme(text = element_text(size=15),
-        axis.ticks.y = element_blank(),
-        axis.ticks.x = element_blank(),
-        legend.position = 'bottom',
-        legend.title = element_blank()) +
-  xlab('Feature Number') + ylab('Mean AUC')
-print(plot1)
-dev.off()
-
 ####performance across subgroups####
-sample.information = readRDS('brca.sample.information.RDS')
+sample.information = readRDS('sample.information.RDS')
 targ_stage = list('Stage I' = c('I'), 'Stage II-IV' = c('II','III','IV'), 'Stage II' = c('II'),'Stage III-IV' = c('III','IV'))
 targ_mammo = c('Pre-dx Mammo < 1 year')
 hr_groups = c('HR Positive','HR Negative','HER2 Positive','HER2 Negative') #,'HR Positive, HER2 Negative','HR Negative, HER2 Negative','HR Positive, HER2 Positive','HR Negative, HER2 Positive'
@@ -1295,6 +1961,7 @@ targ_age_list = list('Dx Age Pre-50' =c(1:50),'Dx Age Post-50' = c(50:100))
 stage_list = list()
 stage_mean_list = list()
 
+#predictions = predictions[predictions$Diagnosis_Time %in% diag_time,]
 auc_calc2 = function(plot_list) {
   tmp_list = lapply(plot_list, function(x) x[order(-(x$methylation_score)),] )
   auc_all = lapply(tmp_list, function(dat)  {
@@ -1334,15 +2001,19 @@ auc_calc2 = function(plot_list) {
     
     
   })
-
+  #auc_all_df = do.call('rbind',auc_all)
   return(auc_all)
 }
-subgroups.order = c(rev(names(targ_stage)), rev(hr_groups), rev(targ_mammo),rev(names(targ_age_list)),'All')
-subgroups = c(names(targ_age_list),names(targ_stage), hr_groups, targ_mammo,'All')
+subgroups.order = c(rev(names(targ_stage)), rev(hr_groups), rev(targ_mammo),rev(names(targ_age_list)),'All','3.7years')
+subgroups = c(names(targ_age_list),names(targ_stage), hr_groups, targ_mammo,'3.7years','All')
+
+
 results_list = complete_list
 combined.auc.summary= NULL
 sens.ci.info = NULL
-
+combined.auc.mean.summary = NULL
+combined.cv.auc.mean.summary = NULL
+indv.methyscore.list = list()
 for (sg in subgroups) {
   print(sg)
   predList = list()
@@ -1351,22 +2022,22 @@ for (sg in subgroups) {
   for (i in 1:length(results_list)) {
     predictions = results_list[[i]]
     #subgrouping
-    if (length(predictions) > 5) {
+    if (length(predictions) > 0) {
       
       if (sg %in% hr_groups) {
         #if hr
         if (sg == 'HR Positive, HER2 Negative') {
-          targ_diag_time_samples = sample.information[sample.information$ER %in% c('positive','low positive') & sample.information$HER2_neu == 'negative' | sample.information$PR %in% c('positive','low positive')  & sample.information$HER2_neu == 'negative',]
+          targ_diag_time_samples = sample.information[sample.information$ER %in% c('positive','low_positive') & sample.information$HER2_neu == 'negative' | sample.information$PR %in% c('positive','low_positive')  & sample.information$HER2_neu == 'negative',]
         } else if (sg == 'HR Negative, HER2 Negative') {
           targ_diag_time_samples = sample.information[sample.information$ER == 'negative' & sample.information$HER2_neu == 'negative' & sample.information$PR == 'negative',]
         } else if (sg == 'HR Positive, HER2 Positive') {
-          targ_diag_time_samples = sample.information[sample.information$ER %in% c('positive','low positive') & sample.information$HER2_neu == 'positive' | sample.information$PR  %in% c('positive','low positive') & sample.information$HER2_neu == 'positive',]
+          targ_diag_time_samples = sample.information[sample.information$ER %in% c('positive','low_positive') & sample.information$HER2_neu == 'positive' | sample.information$PR  %in% c('positive','low_positive') & sample.information$HER2_neu == 'positive',]
         } else if (sg == 'HR Negative, HER2 Positive') {
           targ_diag_time_samples = sample.information[sample.information$ER %in% c('negative') & sample.information$HER2_neu == 'positive' & sample.information$PR %in% c('negative'),]
         } else if (sg == 'HR Negative') {
           targ_diag_time_samples = sample.information[sample.information$ER %in% c('negative') & sample.information$PR %in% c('negative') ,]
         }else if (sg == 'HR Positive') {
-          targ_diag_time_samples = sample.information[sample.information$ER %in% c('positive','low positive') | sample.information$PR %in% c('positive','low positive') ,]
+          targ_diag_time_samples = sample.information[sample.information$ER %in% c('positive','low_positive') | sample.information$PR %in% c('positive','low_positive') ,]
         }  else if (sg == 'HER2 Positive') {
           targ_diag_time_samples = sample.information[ sample.information$HER2_neu == 'positive' ,]
         }  else if (sg == 'HER2 Negative') {
@@ -1377,12 +2048,12 @@ for (sg in subgroups) {
         if (sg == 'Pre-dx Mammo < 1 year') {
           targ.sample = sample.information[as.numeric(sample.information$mammogram.time.median) < 365, 'GRP_Id']
         } 
-
+        #predictions = predictions[predictions$Diagnosis_Time %in% diag_time,]
         predictions = predictions[predictions$GRP_Id %in% targ.sample  | predictions$reported == 'control',] 
         
       } else if (sg %in% names(targ_stage)) {
         targ_stages = sample.information[sample.information$Stage %in% targ_stage[[sg]],]
-      
+        #predictions = predictions[predictions$Diagnosis_Time %in% diag_time,]
         predictions = predictions[predictions$GRP_Id %in% targ_stages$GRP_Id | predictions$reported == 'control',]
       } else if (sg == '3.7years') {
         targ.sample = sample.information[sample.information$followup_time > 365*3,]
@@ -1391,10 +2062,10 @@ for (sg in subgroups) {
       } else if (sg %in% names(targ_age_list)) {
         sample.information$dx.age = ifelse(sample.information$group != 'control', sample.information$Age + abs(sample.information$diff_in_days)/365, sample.information$Age)
         if (sg == 'Dx Age Pre-50') {
-          targ.ages = sample.information[sample.information$dx.age <= 50,] 
+          targ.ages = sample.information[sample.information$dx.age <= 50|sample.information$group == 'control',] # 
           
         } else if (sg == 'Dx Age Post-50') {
-          targ.ages = sample.information[sample.information$dx.age > 50   ,]
+          targ.ages = sample.information[sample.information$dx.age > 50 |sample.information$group == 'control'  ,] #
           
         }
         predictions = predictions[predictions$GRP_Id %in% targ.ages$GRP_Id ,] 
@@ -1411,29 +2082,251 @@ for (sg in subgroups) {
       predList[[i]] = tmp
     }
     
-
+    # plot ROC and PR curve, compute AUROC, AUPR
     
   }
   plot.list = predList
+  mean.auc.perf = mean.bs.auc.plot.fun(plot.list, file_name = paste0(sg,'.mean.score.'))
+  mean.auc.perf$sg = sg
+  combined.auc.mean.summary = rbind(combined.auc.mean.summary,mean.auc.perf)
+
+  tmp1 = do.call('rbind',plot.list)
+  tmp1 = ddply(tmp1[,c('GRP_Id','methylation_score','reported')],c('GRP_Id','reported'),numcolwise(mean))
+  tmp1$subgroup = sg
   
+  indv.methyscore.list[[length(indv.methyscore.list) + 1]] = tmp1
   return = auc_calc.seed(plot.list)
-  return$average_auroc = return$auroc
   return = ddply(return, c('seed'),numcolwise(mean))
-  ci.auc = confidence_interval(return$average_auroc)
-  tmp.summary.auc = data.frame(mean.auc = mean(return$auroc),mean.ci.u = ci.auc[2],mean.ci.l = ci.auc[1], subgroup = sg)
-  combined.auc.summary = rbind(combined.auc.summary,tmp.summary.auc)
+  return$subgroup = sg
+  ci.auc = confidence_interval(return$auroc)
+  tmp.summary.auc = data.frame(seed = 0, auroc = mean(return$auroc),aupr = mean(return$aupr), subgroup = sg)
+  return = rbind(tmp.summary.auc,return)
+  return$average_auroc = return$auroc
+  combined.auc.summary = rbind(combined.auc.summary,return)
   
-  sens = sens.calc(plot.list, file_name = gsub(' ','_',sg), dir = getwd(), st = st, results_list_all[[length(results_list_all)]], sample_info, core.number = detectCores()-2,foldno = 10) 
-  sens.ci.info = rbind(sens.ci.info, sens)
+  #surv curve
+  merged.scores = merge(tmp1, sample_info, by= 'GRP_Id')
+  merged.scores$median.g = ifelse(merged.scores$methylation_score > median(merged.scores$methylation_score) ,'Higher Test Median','Lower Test Median')
+  merged.scores$Cancer.g= ifelse(merged.scores$reported == 'control',0,1)
+  score = 0.648
+  merged.scores$cutoff.gr = ifelse(merged.scores$methylation_score > score ,'Higher Test Median','Lower Test Median')
+  
+  
+  sample_info$censorship_time = abs(sample_info$censorship_time)
+  
+  merged.scores$quartile <- dplyr::ntile(merged.scores$methylation_score, 4)  
+  #
+  
+  weights2<-round(weightsf(merged.scores$GRP_Id, merged.scores))
+  merged.scores.upsampled = NULL
+  for (i in 1:length(weights2)) {
+    weight = round(weights2[i])
+    tmp = merged.scores[rep(i,weight),]
+    merged.scores.upsampled = rbind(merged.scores.upsampled, tmp)
+  }
+  
+  #weights
+  merged.scores$censorship_time.years = merged.scores$censorship_time/365
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ quartile, data =  merged.scores,weights = weights2), risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a','#EA526F','#586994'),
+    legend.labs=c("1","2","3","4"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  merged.scores,weights = weights2))$sctest[3]
+  
+  pval = round(pval,digits = 3)
+  pdf(paste0(sg,".mean.scores.weighted.survquart",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ median.g, data =  merged.scores,weights = weights2), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  merged.scores,weights = weights2))$sctest[3]
+  
+  pdf(paste0(sg,".mean.scores.weighted.survmed",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ cutoff.gr, data =  merged.scores,weights = weights2), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ cutoff.gr, data =  merged.scores,weights = weights2))$sctest[3]
+  
+  pdf(paste0(sg,".mean.scores.weighted.survcutoff",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  #weights zoomed
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ quartile, data =  merged.scores,weights = weights2), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a','#EA526F','#586994'),
+    legend.labs=c("1","2","3","4"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim= c(0.8,1),
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  merged.scores,weights = weights2))$sctest[3]
+  
+  
+  pval = round(pval,digits = 3)
+  pdf(paste0(sg,".mean.scores.weightedzoom.survquart",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ median.g, data =  merged.scores,weights = weights2), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim = c(0.8,1),
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1) 
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  merged.scores,weights = weights2))$sctest[3]
+  
+  pdf(paste0(sg,".mean.scores.weightedzoom.survmed",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ cutoff.gr, data =  merged.scores,weights = weights2), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    ylim = c(0.8,1),
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1) 
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ cutoff.gr, data =  merged.scores,weights = weights2))$sctest[3]
+  
+  pdf(paste0(sg,".mean.scores.weightedzoom.survcutoff",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  #unweighted
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ quartile, data =  merged.scores), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a','#EA526F','#586994'),
+    legend.labs=c("1","2","3","4"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  merged.scores))$sctest[3]
+  
+  
+  pval = round(pval,digits = 3)
+  pdf(paste0(sg,".mean.scores.survquart",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ median.g, data =  merged.scores), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  merged.scores))$sctest[3]
+  
+  pdf(paste0(sg,".mean.scores.survmed",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time.years, Cancer.g) ~ cutoff.gr, data =  merged.scores), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Higher Test Median","Lower Test Median"),
+    xlim = c(0,8), xlab = "Time (Years)", ylab = c("Survival probability"), break.x.by = 1,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)  
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ cutoff.gr, data =  merged.scores))$sctest[3]
+  
+  pdf(paste0(sg,".mean.scores.survcutoff",'.pvalue','.',pval,"_performance.train.predx.pdf"), onefile=FALSE,height = 3, width = 5)
+  
+  print(plot4)
+  dev.off()
+  
+  
+  roc.conc_plot_function(plot_list = predList, file_name = paste0('performance.', gsub(' ','_',sg)),sample_info_dir = sample_info_dir, dir = getwd(), st = st,auc_summary.df = combined.auc.summary, merged.scores, core.number = detectCores()-2,foldno = 10)
 
 } 
+combined.auc.mean.summary$subgroup =  gsub('\\.',' ',combined.auc.mean.summary$sg)
+combined.auc.mean.summary$subgroup = factor(combined.auc.mean.summary$subgroup, levels =subgroups.order)
+saveRDS(combined.auc.mean.summary,paste0('mean.score.bs.perf.RDS'))
+combined.auc.mean.summary = readRDS(paste0('mean.score.bs.perf.RDS'))
 combined.auc.summary$subgroup = gsub('\\.',' ',combined.auc.summary$subgroup)
 sens.ci.info$subgroup =  gsub('_',' ',sens.ci.info$subgroup)
 
-combined.overall = merge(combined.auc.summary, sens.ci.info, by = 'subgroup')
+combined.overall = merge(combined.auc.summary, sens.ci.info, by = c('subgroup','seed'))
 combined.auc.summary$subgroup = factor(combined.auc.summary$subgroup, levels =subgroups.order)
 saveRDS(combined.overall, 'auc.performance.summary.RDS')
-
 combined.auc.summary.melt = reshape2::melt(combined.overall[!combined.overall$subgroup %in% c('Stage II','Stage III-IV'),c('subgroup','mean.auc','mean.ci.u','mean.ci.l')],id.vars = 'subgroup')
 pdf(paste0("all.subtype.auc.summary.pdf"),height = 3, width = 4)
 ggplot(combined.auc.summary.melt[combined.auc.summary.melt$variable != 'mean.auc',], aes(x = subgroup, y = value, group= subgroup)) + geom_line(col = '#334E58',size = 1) + geom_point(data = combined.auc.summary.melt[combined.auc.summary.melt$variable == 'mean.auc',], aes(x = subgroup, y = value),size = 2, col = '#119DA4') + coord_flip() + theme_minimal()+
@@ -1476,6 +2369,21 @@ ggplot(combined.conc.summary.melt[combined.conc.summary.melt$variable != 'conc.m
         panel.grid.major.y = element_blank(),
         panel.grid.minor.y  = element_blank()) +
   scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Concordance Index') + xlab('Subgroup') 
+dev.off()
+
+#
+combined.auc.mean.summary$count= as.numeric(gsub('.hyper','',combined.auc.mean.summary$features))
+pdf(paste0(wkdir,'feature.size.auc.performance.pdf'),height = 5, width = 5)
+plot1 = ggplot(overall.performance, aes(x = count, y= mean_auc)) +  #Diagnosis_Time
+  geom_point() + geom_line()+
+  theme_bw()+
+  theme(text = element_text(size=15),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'bottom',
+        legend.title = element_blank()) +
+  xlab('Feature Number') + ylab('Mean AUC')
+print(plot1)
 dev.off()
 
 
