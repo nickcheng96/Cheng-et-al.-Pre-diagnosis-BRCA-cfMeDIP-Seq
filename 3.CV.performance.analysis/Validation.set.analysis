@@ -1,0 +1,1561 @@
+#!/usr/bin/env Rscript
+#libraries to load (you will need to install DESeq2 and sva
+library(ggpubr)
+library(UpSetR)
+library(ggplot2)
+library(ggfortify)
+library("scatterplot3d") # load
+library(RColorBrewer)
+library(caret)
+library(patchwork)
+library(ROCR)
+library(Hmisc)
+library(survival)
+library(survminer)
+library(lubridate)
+library(ncvreg)
+library(dplyr)
+library(survMarkerTwoPhase)
+library(survAUC)
+library(plyr)
+library(survivalROC)
+#####functions to use later######
+
+#weighted incidence
+all_cause_mortality_CAN<-structure(list(x = c(0, 2.5, 7, 12, 17, 22, 27, 32, 37, 42, 47, 
+                                              52, 57, 62, 67, 72, 77, 82, 87, 90), qx = c(0.0047, 2e-04, 1e-04, 
+                                                                                          1e-04, 5e-04, 8e-04, 0.001, 0.0011, 0.0013, 0.0015, 0.0023, 0.0036, 
+                                                                                          0.0056, 0.0088, 0.0134, 0.0216, 0.0346, 0.061, 0.1089, 0.2163
+                                              ), lx = c(1e+05, 97650, 97552.35, 97503.573825, 97454.8220380875, 
+                                                        97211.1849829923, 96822.3402430603, 96338.228541845, 95808.3682848649, 
+                                                        95185.6138910133, 94471.7217868307, 93385.2969862821, 91704.361640529, 
+                                                        89136.6395145942, 85214.6273759521, 79505.2473417633, 70918.6806288528, 
+                                                        58649.7488800613, 40761.5754716426, 18566.8976273332), dx = c(470, 
+                                                                                                                      19.53, 9.755235, 9.7503573825, 48.7274110190437, 77.7689479863938, 
+                                                                                                                      96.8223402430603, 105.97205139603, 124.550878770324, 142.77842083652, 
+                                                                                                                      217.284960109711, 336.187069150616, 513.544425186962, 784.402427728429, 
+                                                                                                                      1141.87600683776, 1717.31334258209, 2453.78634975831, 3577.63468168374, 
+                                                                                                                      4438.93556886188, 4016.01995679217), qx.1 = c(0.004, 1e-04, 1e-04, 
+                                                                                                                                                                    1e-04, 2e-04, 3e-04, 4e-04, 5e-04, 6e-04, 9e-04, 0.0015, 0.0023, 
+                                                                                                                                                                    0.0037, 0.0058, 0.0087, 0.0142, 0.0232, 0.0416, 0.0768, 0.179
+                                                                                                                      ), lx.1 = c(1e+05, 98000, 97951, 97902.0245, 97853.07348775, 
+                                                                                                                                  97755.2204142622, 97608.5875836408, 97413.3704084736, 97169.8369824524, 
+                                                                                                                                  96878.327471505, 96442.3749978832, 95719.0571853991, 94618.288027767, 
+                                                                                                                                  92867.8496992533, 90174.682057975, 86252.0833884531, 80128.1854678729, 
+                                                                                                                                  70833.3159535996, 56099.9862352509, 34557.5915209146), dx.1 = c(400, 
+                                                                                                                                                                                                  9.8, 9.7951, 9.79020245, 19.57061469755, 29.3265661242787, 39.0434350334563, 
+                                                                                                                                                                                                  48.7066852042368, 58.3019021894714, 87.1904947243545, 144.663562496825, 
+                                                                                                                                                                                                  220.153831526418, 350.087665702738, 538.633528255669, 784.519733904382, 
+                                                                                                                                                                                                  1224.77958411603, 1858.97390285465, 2946.66594366975, 4308.47894286727, 
+                                                                                                                                                                                                  6185.80888224371)), class = "data.frame", row.names = c(50436L, 
+                                                                                                                                                                                                                                                          50442L, 50448L, 50454L, 50460L, 50466L, 50472L, 50478L, 50484L, 
+                                                                                                                                                                                                                                                          50490L, 50496L, 50502L, 50508L, 50514L, 50520L, 50526L, 50532L, 
+                                                                                                                                                                                                                                                          50538L, 50544L, 50550L))
+
+age_incidence<-structure(list(Age.group = c("0 to 04", "05 to 09", "10 to 14", 
+                                            "15 to 19", "20 to 24", "25 to 29", "30 to 34", "35 to 39", "40 to 44", 
+                                            "45 to 49", "50 to 54", "55 to 59", "60 to 64", "65 to 69", "70 to 74", 
+                                            "75 to 79", "80 to 84", "85 to 89", "90+"), PanB = c(0, 0, 0, 
+                                                                                                 0, 0, 0, 0.8, 1.3, 1.6, 5, 9.7, 15.1, 27.1, 40.9, 56.5, 71.4, 
+                                                                                                 75, 77, 56.2), PanM = c(0, 0, 0, 0, 0, 0.5, 0.5, 1.1, 2.2, 5.9, 
+                                                                                                                         9.8, 19.2, 31.1, 46.7, 66.7, 79.2, 82, 85.1, 64.4), PanF = c(0, 
+                                                                                                                                                                                      0, 0, 0.6, 0, 0, 1, 1, 1.1, 4.2, 10.2, 11.1, 23.3, 35.4, 47, 
+                                                                                                                                                                                      65.8, 71, 71.6, 55.7), LungB = c(0, 0, 0.3, 0, 0.5, 0.5, 1.3, 
+                                                                                                                                                                                                                       1.9, 4.7, 10, 32.1, 71.6, 132.3, 208.3, 302.4, 387.2, 373.1, 
+                                                                                                                                                                                                                       302.4, 188), LungM = c(0, 0, 0, 0, 0.5, 0.5, 1, 2.2, 3.9, 9.6, 
+                                                                                                                                                                                                                                              28.8, 65.8, 134.1, 217, 314.4, 423.3, 439.9, 384.8, 300.7), LungF = c(0, 
+                                                                                                                                                                                                                                                                                                                    0, 0, 0, 0.6, 0.5, 1.5, 2.1, 5.4, 10.5, 35.4, 77.3, 130, 200.8, 
+                                                                                                                                                                                                                                                                                                                    292.3, 357.4, 322, 248.3, 139.3), BreastB = c(0, 0, 0, 0, 0.8, 
+                                                                                                                                                                                                                                                                                                                                                                  4.8, 13.6, 28, 55, 84, 101, 115, 144, 175, 208, 188, 196.7, 212, 
+                                                                                                                                                                                                                                                                                                                                                                  175), BreastM = c(0, 0, 0, 0, 0, 0, 0, 0.5, 0.6, 1.1, 0.5, 1, 
+                                                                                                                                                                                                                                                                                                                                                                                    2.8, 4.1, 5.5, 6.8, 6, 3.4, 0), BreastF = c(0, 0, 0, 0.6, 1.1, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                9.3, 26.8, 55, 109, 166, 200, 227, 280, 335, 393, 346, 345.6, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                349, 250.7), ProsB = c(0, 0, 0, 0, 0, 0, 0, 0, 2.7, 9.8, 40.6, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                       93, 161.6, 265.1, 296.3, 278.6, 228.5, 167.4, 110.2), ProsM = c(0, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       0, 0, 0, 0, 0, 0, 0, 5.6, 19.2, 81.6, 187.6, 330.4, 547.9, 618.7, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       602.1, 517.9, 422.2, 365.1)), class = "data.frame", row.names = c(NA, 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -19L))
+
+
+
+
+aml_inc <- function(gender, x){
+  if(gender==1)
+    splinefun(x=c(seq(0,90,5)), y=c(cumsum(age_incidence$BreastM/100000)*5), method="mono")(x)
+  else
+    splinefun(x=c(seq(0,90,5)), y=c(cumsum(age_incidence$BreastF/100000)*5), method="mono")(x)
+}
+
+all_surv <- function(gender, age1, age2){
+  if(gender==1)
+    s <- all_cause_mortality_CAN$lx
+  else 
+    s <- all_cause_mortality_CAN$lx.1
+  f <- function(x) exp(splinefun(all_cause_mortality_CAN$x, log(s), method="mono")(x))
+  f(age2) / f(age1)
+}
+
+
+
+weightsf<-function(ids, matched_samples){
+  #matched_samples_temp<- matched_samples[na.omit(match(matched_samples$GRP_Id ,ids)),]
+  matched_samples_temp<-matched_samples[match(ids,matched_samples$GRP_Id),]
+  matched_samples_temp $gender= ifelse(matched_samples_temp$Sex=="Female",0,1)
+  
+  expected_rate_breast_cr <- mean(aml_inc_cr(matched_samples_temp $Sex, matched_samples_temp $Age, matched_samples_temp $Age+pmax(1, matched_samples_temp $censorship_time/365.25))[matched_samples_temp $group=="control"])
+  
+  n_total_breast <- sum(matched_samples_temp $group!="control")/expected_rate_breast_cr
+  n_total_breast
+  weights <- rep(1, nrow(matched_samples_temp))
+  weights[matched_samples_temp $group=="control"] <- n_total_breast/sum(matched_samples_temp $group=="control")
+  return(weights)
+}
+aml_inc_cr <- Vectorize(function(gender, age1, age2) sum(diff(aml_inc(gender, seq(age1,age2,1) ))*all_surv(gender, age1, seq(age1,age2-1,1)) ), c("gender","age1","age2"))
+
+
+concordance.calc.predx = function(plot_list,test.samples.predx) {
+  
+  
+  #samples_df_folds = sample_info
+  ml_performance_riskscores =  plot_list
+  matched_samples<-test.samples.predx
+  fold_temp<-test.samples.predx[match(ml_performance_riskscores$GRP_Id,test.samples.predx$GRP_Id),]
+  fold_temp$GRP_Id==ml_performance_riskscores$GRP_Id
+  y.test=Surv(time=abs(fold_temp$censorship_time),event=fold_temp$group!="control") #time-to-event outcome
+  rownames(y.test)<-fold_temp$GRP_Id
+  
+  matched_samples = matched_samples[matched_samples$GRP_Id %in% matched_samples$GRP_Id,]
+  rownames(y.test)==ml_performance_riskscores$GRP_Id
+  
+  weights2<-weightsf(ml_performance_riskscores$GRP_Id,matched_samples)
+  
+  linear.pred_lasso.nofilt<-ml_performance_riskscores$methylation_score
+  # concordance
+  concw<-round(survConcordance(y.test ~ linear.pred_lasso.nofilt,weights=weights2)$concordance,digits = 3)
+  conc = round(survConcordance(y.test ~ linear.pred_lasso.nofilt)$concordance,digits = 3)
+  return.df = c(Conc = conc, Concw = concw)
+  return(return.df)
+  
+}
+
+#####functions to use later######
+
+autosome_filt = function(medips.count_df) {
+  tmp =gsub(':.*','',medips.count_df)
+  return_df = medips.count_df[!tmp %in% c('chrY','chrX','chrM')]
+  return(return_df)
+}
+
+
+
+tpr.fpr.calc = function(x){
+  tmp1 = x
+  tmp1$f = as.integer(ifelse(tmp1$reported == 'control', 0, 1))
+  tmp1$f.str = tmp1$reported
+  
+  tmp1 = tmp1[order(-tmp1$methylation_score),]
+  case_no = nrow(tmp1[tmp1$reported!='control',])
+  control_no = nrow(tmp1[tmp1$reported=='control',])
+  auc.df =data.frame(matrix(nrow = 0, ncol=3))
+  for(l in 1:nrow(tmp1)) {
+    x = tmp1[1:l,]
+    case_cum = nrow(x[x$reported!='control',])
+    control_cum = nrow(x[x$reported=='control',])
+    tpr = case_cum/case_no
+    fpr = control_cum/control_no
+    return.tmp = data.frame(l,tpr,fpr)
+    auc.df = rbind(auc.df, return.tmp)
+  }
+  base = data.frame(l = 0, tpr = 0, fpr = 0)
+  auc.df = rbind(base,auc.df)
+  return(auc.df)
+  #auc.df = auc.df[auc.df$fpr > 0,]
+}
+
+
+
+auc.plot.stage.list = function(medips.count_df) {
+  tmp =gsub(':.*','',medips.count_df)
+  return_df = medips.count_df[!tmp %in% c('chrY','chrM')]
+  return(return_df)
+}
+train_test_partition_cv = function(year2_diagnosis_samples, splits = 10, seed = 10) { 
+  set.seed(seed)
+  year2_diagnosis_samples$diagnosis_time_group =year2_diagnosis_samples$Diagnosis_Time
+  tmp_list = split(year2_diagnosis_samples, year2_diagnosis_samples$Diagnosis_Time) #split into list according to diagnosis time group
+  tmp_list_train = lapply(tmp_list, function(x) {
+    yourData<-x[sample(nrow(x)),]
+    #Create 10 equally size folds
+    folds <- cut(seq(1,nrow(yourData)),breaks=splits,labels=FALSE)
+    yourData$fold = folds
+    return(yourData)
+  })
+  return_df = do.call('rbind',tmp_list_train)
+  return(return_df)
+}
+
+matrix_setup = function(all_count_matrix, train_samples, features, sample_information_df) {
+  train_df = all_count_matrix[rownames(all_count_matrix) %in% features,]
+  train_df = train_df[,colnames(train_df) %in% train_samples]
+  train_df_t = data.frame(t(train_df), check.names = F)
+  group_dat = sample_information_df[sample_information_df$GRP_Id %in% train_samples,]
+  group_dat = group_dat[order(match(group_dat$GRP_Id,rownames(train_df_t))),]
+  train_df_t$GRP_Id = rownames(train_df_t)
+  return_df = merge(group_dat[,c('GRP_Id','group')], train_df_t, by = 'GRP_Id', all.y = T)
+  rownames(return_df) = return_df$GRP_Id
+  return(return_df[,-1])
+}
+
+auc_calc = function(prediction_table,labels = c('control','cancer')) {
+  tmp = prediction_table
+  tmp = tmp[order(-tmp$methylation_score),]
+  #labels = c(tmp$reported)
+  pred = prediction(predictions = c(tmp$methylation_score) ,labels =  tmp$reported, labels)
+  perf_AUC=performance(pred,"auc") #Calculate the AUC value
+  AUC=perf_AUC@y.values[[1]]
+  return(AUC)
+}
+
+
+####else#####
+cpg_count = readRDS('hg38_cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
+cpg_count = cpg_count[cpg_count$count > 5,] #selecting windows with at least 6 or mor CpG sites
+
+regulatory = readRDS('hg38.window300.promoter.enhancer.RDS')
+cgi=readRDS('hg38.cig.info.300.RDS')
+blood.wgbs = readRDS('hg38.wbc.ihec.300.mean.RDS')
+blood.remove = unique(unlist(lapply(blood.wgbs[1:3], function(x) x[x$pct > 0.1 & x$cell_mean > 0.25,'window'] )))
+blacklist = readRDS('hg38-blacklist.v2_window300.RDS')
+repeat.element = readRDS('hg38.repeat.window.300.filter.elements.cut.RDS')
+
+#dmr
+diagnosis_time_colors1 = c('#7A797C',"#694A38","#048BA8",'#60D394','#AAF683','#FFD97D','#FF9B85','#C8553D','#2A2A72','#B497D6')
+names(diagnosis_time_colors1) = c('Control','Bratman.Controls','0-1 year','1-2 years','2-3 years','3-4 years','4-5 years','5+ years','Post-Diagnosis BRCA','HN_Cancer')
+
+dmrtable_dir='/dmr/output/dir/'
+setwd(dmrtable_dir)
+deseq2.dmr.files = list.files(pattern = '.*brca.predx.deseq2.seed.*')
+
+
+deseq2.dmr.list = lapply(deseq2.dmr.files, function(x) {
+  tmp = readRDS(x)
+  tmp1 = lapply(tmp, function(y) {
+    a = y
+    a$window =rownames(a)
+    return(a)
+  } )
+  tmp1 = do.call('rbind',tmp1)
+  return(tmp1)
+} )
+
+deseq2.dmr.df= do.call('rbind',deseq2.dmr.list)
+##ddply median p-value and logFC
+library(plyr)
+deseq2.dmr.df.median = ddply(deseq2.dmr.df[,c('window','pvalue','logFC')], 'window',numcolwise(median))
+deseq2.dmr.df.mean = ddply(deseq2.dmr.df[,c('window','pvalue','logFC')], 'window',numcolwise(mean))
+
+saveRDS(deseq2.dmr.df.median,'deseq2.cv.median.dmr.RDS') 
+
+
+#held out batch perfomance(batch 8)
+library(gridExtra)
+library(caret)
+library(ROCR)
+library(pROC)
+medips.count_dir='/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/hg38.counts/brca.paad.control/' #directory containing sample/region counts
+sample.information = readRDS('/.mounts/labs/awadallalab/private/ncheng/cfmedip_data/cptp_samples/cancer_analysis/hg38/dmr_analysis/batch1_8/cv.extend0.genomewide.bloodfilt/select.sample.RDS')
+
+matrix = readRDS('deseq2.normalized.matrix.RDS')
+train.samples =sample.information[sample.information$Set == 'Discovery',]
+set.seed(20)
+
+#predx test samples
+test.samples.predx = train.samples[train.samples$Set == 'Validation',]
+#deseq2
+predx.dmrs= readRDS(paste0(dmrtable_dir,'deseq2.cv.median.dmr.RDS'))
+predx.dmrs.sig = predx.dmrs[predx.dmrs$pvalue < 0.05 & predx.dmrs$logFC > 0.5,]
+predx.dmrs.sig = predx.dmrs.sig[order(predx.dmrs.sig$pvalue),]
+
+targ.features = predx.dmrs.sig$window
+targ.filt = function(x) {
+  a = x[x %in% cpg_count$window]
+  a = a[!a %in% blacklist$window]
+  a = a[a %in% regulatory$window | a %in% cgi$window | a %in% repeat.element$window]
+  a = a[!a %in% blood.remove1]
+  a = autosome_filt(a)
+  return(a)
+}
+targ.features = targ.filt(targ.features)
+
+#postdx setiup
+ext.info = data.frame(readRDS('OCTANE_Clinical_Info.rds'))
+ext.info$HR.STATUS = ifelse(ext.info$ER.STATUS == 'Positive' | ext.info$PR.STATUS == 'Positive','Positive','Negative' )
+test.samples.postdx = readRDS('post.brca.dx.info.RDS')
+test.samples.postdx$group = ifelse(test.samples.postdx$Diagnosis_Time %in% 'Post-Diagnosis BRCA' ,'cancer','control')
+
+#combined function pre- and post-dx 
+savedir='/dir/to/save/output/'
+
+dir.create(savedir,recursive = T)
+model.performance.rf.only.rank.combined = function(feature_size, type = 'deseq2',targ.features,savedir) {
+  performance.summary = list()
+  for (f in feature_size) {
+    performance.summary.predx = list()
+    performance.summary.postdx = list()
+    set.seed(seeds)
+    #type = 'evora'
+    feature_length = f
+    dirsave=savedir
+    dir.create(dirsave, recursive = T)
+    
+    #
+    features =  autosome_filt(targ.features)[1:min(f,length(targ.features))]#
+    #features = rfe_calc(matrix, size_estimate = 100)
+    train_set_matrix = matrix_setup(matrix, train.samples$GRP_Id, features, train.samples) 
+    test_set_matrix.predx = matrix_setup(matrix, test.samples.predx$GRP_Id, features, test.samples.predx)
+    test_set_matrix.postdx = matrix_setup(matrix, test.samples.postdx$GRP_Id, features, test.samples.postdx)
+    test_set_matrix.predx$group = factor(test_set_matrix.predx$group, levels = c('control','cancer'))
+    test_set_matrix.postdx$group = factor(test_set_matrix.postdx$group, levels = c('control','cancer'))
+    
+    targ_features =features
+    train_set_matrix = train_set_matrix[,colnames(train_set_matrix) %in% c('group',targ_features)]
+    test_set_matrix.predx = test_set_matrix.predx[,colnames(test_set_matrix.predx) %in% c('group',targ_features)]
+    test_set_matrix.postdx = test_set_matrix.postdx[,colnames(test_set_matrix.postdx) %in% c('group',targ_features)]
+    
+    control = trainControl(method = 'repeatedcv', number = 10, repeats = 10, search = 'random', classProbs = TRUE, summaryFunction = twoClassSummary)
+    tunegrid <- expand.grid(.mtry=mtry)
+    metric = 'Accuracy'
+    
+    ntrees = seq(500,2000,500)
+    ntree_list = list()
+    acc = c()
+    train_set_matrix$group = factor(train_set_matrix$group, levels = c('control','cancer'))
+    mtry = seq(20,50,10)
+    rf_model = train(group ~ ., data = train_set_matrix, method = 'rf', metric = metric, tuneGrid = tunegrid, trControl = control, ntrees = ntrees)
+    
+    prediction.setup.rf= function(rf_model,test_set_matrix,model = 'RF') {
+      predictions = predict(rf_model, test_set_matrix[,-1])
+      predictions_prob = predict(rf_model, test_set_matrix[,-1], type = 'prob')
+      prediction_table = data.frame(GRP_Id= rownames(test_set_matrix), predictions = predictions, reported = test_set_matrix$group, methylation_score = predictions_prob[,colnames(predictions_prob) != 'control'], model = model)
+      prediction_table = prediction_table[order(-prediction_table$methylation_score),]
+      prediction_table$features = length(targ_features)
+      prediction_table$auroc = auc_calc(prediction_table)
+      prediction_table$model = model
+      #train_performance = getTrainPerf(rf_model)
+      #prediction_table$TrainROC = train_performance$TrainROC
+      # prediction_table$TrainSens = train_performance$TrainSens
+      # prediction_table$TrainSpec = train_performance$TrainSpec
+      prediction_table$type = type
+      tmp = tpr.fpr.calc(prediction_table)
+      tmp.99 = tmp[tmp$fpr <= 0.01,]
+      tmp.95 = tmp[tmp$fpr <= 0.05,]
+      
+      prediction_table$sens.99 = max(tmp.99$tpr)
+      prediction_table$sens.95 = max(tmp.95$fpr)
+      return(prediction_table)
+    }
+    
+    prediction_table.rf.predx.rf =prediction.setup.rf(rf_model,test_set_matrix.predx,model = 'RF')
+    prediction_table.rf.postdx.rf =prediction.setup.rf(rf_model,test_set_matrix.postdx,model = 'RF')
+    prediction_table.rf.train.rf =prediction.setup.rf(rf_model,train_set_matrix,model = 'RF')
+    
+    prediction_table.rf.predx.rf$dx.time = 'predx'
+    prediction_table.rf.postdx.rf$dx.time = 'postdx'
+    prediction_table.rf.train.rf$dx.time = 'predx.train'
+    
+    saveRDS(prediction_table.rf.predx.rf,paste0(dirsave,'predx.feature.',f,'.dmr.','seed.',seedno,".rf.predictions.RDS"))
+    saveRDS(prediction_table.rf.postdx.rf,paste0(dirsave,'postdx.feature.',f,'.dmr.','seed.',seedno,".rf.predictions.RDS"))
+    saveRDS(prediction_table.rf.train.rf,paste0(dirsave,'predx.train.feature.',f,'.dmr.','seed.',seedno,".rf.predictions.RDS"))
+    
+    performance.summary.predx[[seeds]] = prediction_table.rf.predx.rf
+    performance.summary.postdx[[seeds]] = prediction_table.rf.postdx.rf
+    
+    #
+    library(MLmetrics)
+    library(ranger)
+    set.seed(seeds)
+    control = trainControl(method = 'repeatedcv', number = 10, repeats = 10, classProbs = TRUE, summaryFunction = twoClassSummary) #, search = 'random'
+    
+    mtry = seq(20,50,5)
+    tunegrid = expand.grid(.mtry = mtry,.splitrule = 'gini',.min.node.size = c(5,10,15,20))#)#$#
+    
+    metric = 'Accuracy'
+    
+    ntrees = seq(500,2000,250)
+    train_set_matrix$group = factor(train_set_matrix$group, levels = c('control','cancer'))
+    rf_model = train(group ~ ., data = train_set_matrix, method = 'ranger', metric = metric,tuneGrid = tunegrid, trControl = control)#, ntree = ntrees)
+    
+    
+    prediction.setup.rf= function(rf_model,test_set_matrix,model = 'RF') {
+      predictions = predict(rf_model, test_set_matrix[,-1])
+      predictions_prob = predict(rf_model, test_set_matrix[,-1], type = 'prob')
+      prediction_table = data.frame(GRP_Id= rownames(test_set_matrix), predictions = predictions, reported = test_set_matrix$group, methylation_score = predictions_prob[,colnames(predictions_prob) != 'control'], model = model)
+      prediction_table = prediction_table[order(-prediction_table$methylation_score),]
+      prediction_table$features = length(targ_features)
+      prediction_table$auroc = auc_calc(prediction_table)
+      prediction_table$model = model
+      #train_performance = getTrainPerf(rf_model)
+      #prediction_table$TrainROC = train_performance$TrainROC
+      # prediction_table$TrainSens = train_performance$TrainSens
+      # prediction_table$TrainSpec = train_performance$TrainSpec
+      prediction_table$type = type
+      tmp = tpr.fpr.calc(prediction_table)
+      tmp.99 = tmp[tmp$fpr <= 0.01,]
+      tmp.95 = tmp[tmp$fpr <= 0.05,]
+      
+      prediction_table$sens.99 = max(tmp.99$tpr)
+      prediction_table$sens.95 = max(tmp.95$fpr)
+      return(prediction_table)
+    }
+    
+    prediction_table.rf.predx.rf =prediction.setup.rf(rf_model,test_set_matrix.predx,model = 'RF')
+    prediction_table.rf.postdx.rf =prediction.setup.rf(rf_model,test_set_matrix.postdx,model = 'RF')
+
+    prediction_table.rf.predx.rf$dx.time = 'predx'
+    prediction_table.rf.postdx.rf$dx.time = 'postdx'
+
+    saveRDS(prediction_table.rf.predx.rf,paste0(dirsave,'predx.feature.',f,'.dmr.','seed.',seedno,".rf.predictions.RDS"))
+    saveRDS(prediction_table.rf.postdx.rf,paste0(dirsave,'postdx.feature.',f,'.dmr.','seed.',seedno,".rf.predictions.RDS"))
+
+    performance.summary[[length(performance.summary) + 1]] = prediction_table.rf.predx.rf[1,]
+    performance.summary[[length(performance.summary) + 1]] = prediction_table.rf.postdx.rf[1,]
+    
+
+    
+  }
+  
+  return.df = do.call('rbind',performance.summary)
+  return(return.df)
+  
+  
+  
+}
+
+perf.overall = NULL
+feature_size = 150
+seedno=20
+print(seedno)
+perf.overall = model.performance.rf.rank.combined(feature_size, type = 'deseq2',targ.features,savedir,seeds=seedno)
+perf.overall$seed = seedno
+saveRDS(perf.overall,paste0(savedir,'test.perf.',seedno,'.prepost.RDS'))
+
+#repeated ensemble performance 
+sample.information.merged$Stage = ifelse(sample.information.merged$group == 'control','Control',sample.information.merged$Stage)
+
+setwd(wkdir)
+#targ seed and score
+feat=150
+seedno=20
+targ.summary.fun.indv = function(targ.dir,targ.file.format,time = 'predx'){
+  targ.files = list.files(path = targ.dir,pattern = targ.file.format)
+  
+  targ.list=  lapply(targ.files, function(x){
+    tmp =  readRDS(paste0(targ.dir,x))
+    tmp$auroc = auc_calc(tmp)
+    tmp1 = tpr.fpr.calc(tmp)
+    tmp.99 = max(tmp1[tmp1$fpr <= 0.01,'tpr'])
+    tmp.95 = max(tmp1[tmp1$fpr <= 0.05,'tpr'])
+    tmp$sens.99 = ifelse(is.infinite(max(tmp.99)),0, max(tmp.99))
+    tmp$sens.95 = ifelse(is.infinite(max(tmp.95)),0, max(tmp.95))
+    tmp$seed =gsub('.rf.*','', gsub('.*seed.','',x))
+    
+    
+    
+    if (time == 'predx.test') {
+      ml_performance_riskscores =  tmp
+      matched_samples<-test.samples.predx
+      rownames(matched_samples) = matched_samples$GRP_Id
+      fold_temp<-matched_samples[ml_performance_riskscores$GRP_Id,]
+      fold_temp$GRP_Id==ml_performance_riskscores$GRP_Id
+      y.test=Surv(time=abs(fold_temp$censorship_time),event=fold_temp$group!="control") #time-to-event outcome
+      rownames(y.test)<-fold_temp$GRP_Id
+      
+      matched_samples = matched_samples[matched_samples$GRP_Id %in% matched_samples$GRP_Id,]
+      rownames(y.test)==ml_performance_riskscores$GRP_Id
+      
+      weights2<-weightsf(ml_performance_riskscores$GRP_Id,matched_samples)
+      
+      linear.pred_lasso.nofilt<-ml_performance_riskscores$methylation_score
+      # concordance
+      concw<-round(survConcordance(y.test ~ linear.pred_lasso.nofilt,weights=weights2)$concordance,digits = 3)
+      conc = round(survConcordance(y.test ~ linear.pred_lasso.nofilt)$concordance,digits = 3)
+      tmp$conc =conc
+      tmp$concw = concw
+      
+    } else if (time == 'postdx') {
+      post.dx.info = test.samples.postdx[order(match(test.samples.postdx$GRP_Id, tmp$GRP_Id)),]
+      linear.pred_lasso.nofilt<-tmp$methylation_score
+      
+      y.test=Surv(time=rep(0,nrow(post.dx.info)),event=post.dx.info$group!="control")
+      conc = round(survConcordance(y.test ~ linear.pred_lasso.nofilt)$concordance,digits = 3)
+      tmp$conc =conc
+      tmp$concw =conc
+    }else if (time == 'predx.train') {
+      
+      ml_performance_riskscores =  tmp
+      matched_samples<-train.samples
+      fold_temp<-matched_samples[match(ml_performance_riskscores$GRP_Id,matched_samples$GRP_Id),]
+      fold_temp$GRP_Id==ml_performance_riskscores$GRP_Id
+      y.test=Surv(time=abs(fold_temp$censorship_time),event=fold_temp$group!="control") #time-to-event outcome
+      rownames(y.test)<-fold_temp$GRP_Id
+      
+      matched_samples = matched_samples[matched_samples$GRP_Id %in% matched_samples$GRP_Id,]
+      rownames(y.test)==ml_performance_riskscores$GRP_Id
+      
+      weights2<-weightsf(ml_performance_riskscores$GRP_Id,matched_samples)
+      
+      linear.pred_lasso.nofilt<-ml_performance_riskscores$methylation_score
+      # concordance
+      concw<-round(survConcordance(y.test ~ linear.pred_lasso.nofilt,weights=weights2)$concordance,digits = 3)
+      conc = round(survConcordance(y.test ~ linear.pred_lasso.nofilt)$concordance,digits = 3)
+      tmp$conc =conc
+      tmp$concw = concw
+      
+    }
+    targ.df.collapse =tmp # ddply(tmp[,c('model','features','seed','auroc','sens.99','sens.95','conc','concw')], c('model','features','seed'),numcolwise(mean))
+    
+    return(targ.df.collapse)
+    
+  } )
+  targ.df= do.call('rbind',targ.list)
+  targ.df$time = time
+  return(targ.df)
+  
+}
+targ.dir = paste0(wkdir,feat,'.hyper','/performance/')
+targ.file.format.predx= paste0('predx.feature.',feat,'.*',seedno,'.',model,'.predictions.RDS')
+targ.file.format.postdx= paste0('postdx.feature.',feat,'.*',seedno,'.',model,'.predictions.RDS')
+targ.file.format.predx.train= paste0('predx.train.feature.',seedno,'.',feat,'.*',model,'.predictions.RDS')
+targ.file.format.predx.summary = targ.summary.fun.indv(targ.dir,targ.file.format.predx,time = 'predx.test')
+targ.file.format.postdx.summary = targ.summary.fun.indv(targ.dir,targ.file.format.postdx,time = 'postdx')
+
+postdx.plot.bound = function(prediction_table, model = 'rf',dirsave,cutoff = 0.648,name = 'test') {
+  
+  auc.plot = tpr.fpr.calc(prediction_table)
+  auc.plot$Stage = 'All'
+  auc.plot.stage.list = list('All' = auc.plot)
+  
+  #stage
+  controls = c('all','split')
+  for (c in controls) {
+    if(c == 'all') {
+      stages = NULL
+      sens.01= NULL
+      sens.05= NULL
+      stage.list = list("Early (I & II)" = c('I','II'), "Late (III & IV)" = c('III','IV')) 
+      for (i in c(1:length(stage.list))) {
+        auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]) 
+        auc.plot.stage.1$Stage = names(stage.list)[i]
+        auc.plot.stage.list[[i+1]] = auc.plot.stage.1
+        stages = c(stages,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]))
+        sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+        sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+        
+      }
+      combined.info
+      prediction_table.merged = merge(prediction_table,ext.info[,c('SampleID','Stage','HR.STATUS','STATUS.SUMMARY')],by.x = 'GRP_Id',by.y='SampleID',all.x = T)
+      #prediction_table.merged = merge(prediction_table.merged,combined.info[,c('GRP_Id','Diagnosis_Time')], by = 'GRP_Id')
+      prediction_table.merged[is.na(prediction_table.merged)] = 'Control'
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,'.',name,"_performance.stage.score.postdx.pdf"),height = 2, width = 1.8)
+      plot1=ggplot(prediction_table.merged, aes(x = Stage, y = methylation_score, col= Stage)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c(Control ='Black',I='#BDA0BC',II = '#4C061D',III="#EE964B",IV="#0077B6",UNK='Grey')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot1)
+      dev.off()
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.mol.subtype.subtype.postdx.pdf"),height = 2, width = 1.5)
+      plot1=ggplot(prediction_table.merged, aes(x = STATUS.SUMMARY, y = methylation_score, col= STATUS.SUMMARY)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c('ER+'='#FFD3BA','HER2+'='#FF3A20','TNBC'='#548687','Control' = 'Black')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot1)
+      dev.off()
+      
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,'.',name,"_performance.hr.subtype.postdx.pdf"),height = 2, width = 1.3)
+      prediction_table.merged$HR = ifelse(prediction_table.merged$HR.STATUS == 'Positive','HR+',prediction_table.merged$HR.STATUS)
+      prediction_table.merged$HR = ifelse(prediction_table.merged$HR.STATUS == 'Negative','HR-',prediction_table.merged$HR)
+      
+      plot1=ggplot(prediction_table.merged, aes(x = HR, y = methylation_score, col= HR)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c('HR-' = '#5E2BFF','HR+' = '#FC6DAB',Control = 'Black')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot1)
+      dev.off()
+      
+    }  else if (c == 'split') {
+      stages = NULL
+      sens.01= NULL
+      sens.05= NULL
+      stage.list = list("Early (I & II)" = c('I','II'), "Late (III & IV)" = c('III','IV')) 
+      for (i in c(1:length(stage.list))) {
+        auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]) 
+        auc.plot.stage.1$Stage = names(stage.list)[i]
+        auc.plot.stage.list[[i+1]] = auc.plot.stage.1
+        stages = c(stages,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]))
+        sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+        sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+        
+      }
+      prediction_table.merged = merge(prediction_table,ext.info[,c('SampleID','Stage','HR.STATUS','STATUS.SUMMARY')],by.x = 'GRP_Id',by.y='SampleID',all.x = T)
+      prediction_table.merged = merge(prediction_table.merged,combined.info[,c('GRP_Id','Diagnosis_Time')], by = 'GRP_Id')
+      prediction_table.merged$Diagnosis_Time = ifelse(prediction_table.merged$Diagnosis_Time == 'HN_Cancer','HNSC',prediction_table.merged$Diagnosis_Time)
+      prediction_table.merged$Diagnosis_Time = ifelse(prediction_table.merged$Diagnosis_Time == 'Bratman.Controls','Non-Cancer',prediction_table.merged$Diagnosis_Time)
+      
+      prediction_table.merged[is.na(prediction_table.merged$Stage),'Stage'] = prediction_table.merged[is.na(prediction_table.merged$Stage),'Diagnosis_Time']
+      prediction_table.merged[is.na(prediction_table.merged$HR.STATUS),'HR.STATUS'] = prediction_table.merged[is.na(prediction_table.merged$HR.STATUS),'HR.STATUS']
+      prediction_table.merged[is.na(prediction_table.merged$STATUS.SUMMARY),'STATUS.SUMMARY'] = prediction_table.merged[is.na(prediction_table.merged$STATUS.SUMMARY),'STATUS.SUMMARY']
+      
+      prediction_table.merged$Stage = factor(prediction_table.merged$Stage, levels =c("Non-Cancer" ,"HNSC" ,'I','II' ,'III','IV','UNK')) 
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,'.',name,"_performance.stage.score.postdx.pdf"),height = 2, width = 1.8)
+      plot1=ggplot(prediction_table.merged, aes(x = Stage, y = methylation_score, col= Stage)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",I='#BDA0BC',II = '#4C061D',III="#EE964B",IV="#0077B6",UNK='Grey')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot1)
+      dev.off()
+      
+      prediction_table.merged$STATUS.SUMMARY = factor(prediction_table.merged$STATUS.SUMMARY, levels =c("Non-Cancer" ,"HNSC" ,"ER+","HER2+" ,"TNBC")) 
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,'.',name,"_performance.mol.subtype.subtype.postdx.pdf"),height = 2, width = 1.5)
+      plot1=ggplot(prediction_table.merged, aes(x = STATUS.SUMMARY, y = methylation_score, col= STATUS.SUMMARY)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",'ER+'='#FFD3BA','HER2+'='#FF3A20','TNBC'='#548687')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot1)
+      dev.off()
+      
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,'.',name,"_performance.hr.subtype.postdx.pdf"),height = 2, width = 1.3)
+      prediction_table.merged$HR = ifelse(prediction_table.merged$HR.STATUS == 'Positive','HR+',prediction_table.merged$HR.STATUS)
+      prediction_table.merged$HR = ifelse(prediction_table.merged$HR.STATUS == 'Negative','HR-',prediction_table.merged$HR)
+      prediction_table.merged$HR = factor(prediction_table.merged$HR,levels  = c("Non-Cancer" ,"HNSC" ,'HR-' ,'HR+' ))
+      plot1=ggplot(prediction_table.merged, aes(x = HR, y = methylation_score, col= HR)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",'HR-' = '#5E2BFF','HR+' = '#FC6DAB')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot1)
+      dev.off()
+      
+    } 
+  }
+  
+  
+  
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,'.',name,"_AUC_performance.stage.postdx.pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = Stage)) + 
+    geom_line(size = 1) +
+    geom_line(data =  auc.plot.stage.list[[2]], aes(x = fpr, y =tpr,col = Stage),size=1)+
+    geom_line(data =  auc.plot.stage.list[[3]], aes(x = fpr, y =tpr,col = Stage),size=1)+
+    
+    
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c(All ='Black',"Early (I & II)"='#BDA0BC',"Late (III & IV)" = '#EE964B')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  
+  ####hr status
+  hr.status = NULL
+  for (i in c('Positive','Negative')) {
+    auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$HR.STATUS == i,'SampleID'] |prediction_table$reported == 'control',]) 
+    auc.plot.stage.1$HR_Status = i
+    auc.plot.stage.list[[i]] = auc.plot.stage.1
+    hr.status = c(hr.status,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$HR.STATUS == i,'SampleID'] |prediction_table$reported == 'control',]))
+    sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+    sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+    
+  }
+  
+  stages = NULL
+  sens.01= NULL
+  sens.05= NULL
+  stage.list = list("Early (I & II)" = c('I','II'), "Late (III & IV)" = c('III','IV')) 
+  for (i in c(1:length(stage.list))) {
+    auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]) 
+    auc.plot.stage.1$Stage = names(stage.list)[i]
+    auc.plot.stage.list[[i+1]] = auc.plot.stage.1
+    stages = c(stages,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]))
+    sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+    sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+    
+  }
+  
+  
+  auc.plot.stage.list[["All"]]$HR_Status = 'All'
+  
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,'.',name,"_AUC_performance.hrstatus.postdx.pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = HR_Status)) + 
+    geom_line(size = 1) +
+    geom_line(data =  auc.plot.stage.list[['Positive']], aes(x = fpr, y =tpr,col = HR_Status),size=1)+
+    geom_line(data =  auc.plot.stage.list[['Negative']], aes(x = fpr, y =tpr,col = HR_Status),size=1)+
+    
+    
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c(Negative = '#5E2BFF',Positive = '#FC6DAB',All = 'Black')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  ####Subtype
+  hr.status = NULL
+  auc.plot.stage.list = list()
+  for (i in c('ER+','HER2+','TNBC')) {
+    auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$STATUS.SUMMARY == i,'SampleID'] |prediction_table$reported == 'control',]) 
+    auc.plot.stage.1$STATUS.SUMMARY = i
+    auc.plot.stage.list[[i]] = auc.plot.stage.1
+    hr.status = c(hr.status,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$STATUS.SUMMARY == i,'SampleID'] |prediction_table$reported == 'control',]))
+    sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+    sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+    
+  }
+  auc.plot.stage.list[["All"]] =  auc.plot
+  auc.plot.stage.list[["All"]]$STATUS.SUMMARY = 'All'
+  
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,'.',name,"_AUC_performance.subtype.postdx.pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = STATUS.SUMMARY)) + 
+    geom_line(size = 1) +
+    geom_line(data =  auc.plot.stage.list[['ER+']], aes(x = fpr, y =tpr,col = STATUS.SUMMARY),size=1)+
+    geom_line(data =  auc.plot.stage.list[['HER2+']], aes(x = fpr, y =tpr,col = STATUS.SUMMARY),size=1)+
+    geom_line(data =  auc.plot.stage.list[['TNBC']], aes(x = fpr, y =tpr,col = STATUS.SUMMARY),size=1)+
+    
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c('ER+'='#FFD3BA','HER2+'='#FF3A20','TNBC'='#548687','All' = 'Black')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  
+}
+predx.plot.bound=function(prediction_table.rf, test.samples,model = 'rf',dirsave,name = 'test',cutoff = 0.648) {
+  
+  auc.plot = tpr.fpr.calc(prediction_table.rf)
+  auc.plot$Time = 'All'
+  auc.plot.stage.list = list('All' = auc.plot)
+  
+  times = c('0-2', '2-4','4+')
+  for (i in times){
+    if (i == '0-2') {
+      targ.samples = test.samples[test.samples$group == 'control' | test.samples$censorship_time >=0 & test.samples$censorship_time <= 365*2, ]
+      auc.plot = tpr.fpr.calc(prediction_table.rf[prediction_table.rf$GRP_Id %in% targ.samples$GRP_Id,])
+      auc.plot$Time = i
+      auc.plot.stage.list[[2]] = auc.plot
+    } else if (i == '2-4') {
+      targ.samples = test.samples[test.samples$group == 'control' | test.samples$censorship_time >2*365 & test.samples$censorship_time <= 365*4, ]
+      auc.plot = tpr.fpr.calc(prediction_table.rf[prediction_table.rf$GRP_Id %in% targ.samples$GRP_Id,])
+      auc.plot$Time = i
+      auc.plot.stage.list[[3]] = auc.plot
+    } else if (i == '4+') {
+      targ.samples = test.samples[test.samples$group == 'control' | test.samples$censorship_time >4*365 , ]
+      auc.plot = tpr.fpr.calc(prediction_table.rf[prediction_table.rf$GRP_Id %in% targ.samples$GRP_Id,])
+      auc.plot$Time = i
+      auc.plot.stage.list[[4]] = auc.plot
+    }
+  }
+  
+  concind = concordance.calc.predx(prediction_table.rf,test.samples)
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,"_AUC_performance.predx.",name,".pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = Time)) + 
+    geom_line(size = 1) +
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    geom_line(data =auc.plot.stage.list[[2]],size=1 ) +
+    geom_line(data =auc.plot.stage.list[[3]],size=1 ) +
+    geom_line(data =auc.plot.stage.list[[4]],size=1 ) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'bottom',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c(All ='Black',"0-2"='#2374AB',"2-4" = '#C1E279',"4+" = '#BC4B51')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table.rf$auroc[1],digits = 3),' Concw: ',concind[2], 'conc: ', concind[1]))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,"_all.only.AUC_performance.predx.",name,".pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = Time)) + 
+    geom_line(size = 1) +
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c(All ='Black',"0-2"='#2374AB',"2-4" = '#C1E279',"4+" = '#BC4B51')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table.rf$auroc[1],digits = 3),' Concw: ',concind[2], 'conc: ', concind[1]))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  
+  tmp = merge(prediction_table.rf,test.samples, by = 'GRP_Id')
+  tmp$group = factor(ifelse(tmp$group == 'cancer','Pre-dx\nBRCA','Control'),levels = c('Pre-dx\nBRCA','Control'))
+  a = tmp[tmp$group != 'Control',]
+  b = tmp[tmp$group == 'Control',]
+  pvalue = t.test(a$methylation_score, b$methylation_score)$p.value
+  plot1 = ggplot(tmp, aes(y = methylation_score,fill = group)) + 
+    geom_density(alpha= 0.7) +
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.2)) +
+    
+    theme_bw()+
+    scale_fill_manual(values = c('#D55672' ,"#7A797C")) +
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          axis.text.y = element_blank(),
+          #axis.text.x = element_blank(),
+          
+          axis.title.y = element_blank(),
+          
+          
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    xlab('Density') + 
+    ylab('Classification Score') + ggtitle(paste0('AUC: ',round(prediction_table.rf$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  
+  
+  
+  plot2 = ggplot(tmp, aes(y = methylation_score,x = censorship_time)) + 
+    geom_point(aes(col = Diagnosis_Time)) +#
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.2)) +
+    scale_color_manual(values = diagnosis_time_colors1) +
+    
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    xlab('Follow Up Time') + 
+    ylab('Classification Score') + ggtitle(paste0('Pvalue: ', format(pvalue, scientific = T)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  
+  plot3 = ggplot(tmp, aes(x = group,y = methylation_score)) + 
+    geom_boxplot(alpha= 0.7, aes(col = group)) +
+    #geom_jitter(aes(col = Diagnosis_Time), width= 0.4) +
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.2)) +
+    
+    theme_bw()+
+    scale_color_manual(values = c('#D55672' ,"#7A797C")) +
+    
+    theme(text = element_text(size=5),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          #axis.text.y = element_blank(),
+          #axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          #axis.title.y = element_blank(),
+          
+          legend.title = element_blank(),
+          axis.text=element_text(size=7),
+          axis.title=element_text(size=7)) +
+    xlab('Group') + 
+    ylab('Classification Score') + ggtitle(paste0('AUC: ',round(prediction_table.rf$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  
+  
+  above.cutoff = tmp[tmp$methylation_score >= cutoff,]
+  below.cutoff = tmp[tmp$methylation_score >= cutoff,]
+  sens = sum(above.cutoff$reported  == 'cancer')/sum(tmp$reported == 'cancer')
+  spec = 1 -(sum(above.cutoff$reported  != 'cancer')/sum(tmp$reported != 'cancer'))
+  
+  cutoff.perf = data.frame(Sensitivity = sens, Specificity = spec, group = 'predx')
+  cutoff.perf = reshape2::melt(cutoff.perf,id.vars = 'group')
+  plot4 = ggplot(cutoff.perf, aes(x = variable,y = value,col = variable, fill = variable)) + 
+    geom_bar(stat = 'identity') +
+    #geom_jitter(aes(col = Diagnosis_Time), width= 0.4) +
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.2)) +
+    
+    theme_bw()+
+    scale_color_manual(values = c(Specificity="#7A797C",Sensitivity='#D55672')) +
+    scale_fill_manual(values = c(Specificity="#7A797C",Sensitivity='#D55672')) +
+    
+    theme(text = element_text(size=5),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          axis.title.x = element_blank(),
+          #axis.text.x = element_blank(),
+          
+          #axis.title.y = element_blank(),
+          
+          legend.title = element_blank(),
+          axis.text=element_text(size=7),
+          axis.title=element_text(size=7)) +
+    ylab('Performance')  + ggtitle(paste0('Sens: ',sens))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  
+  figure <- ggarrange(plot2, plot1,plot3,
+                      labels = c(""),
+                      ncol = 3, nrow = 1,
+                      heights = c(0.5, 0.5,0.5),
+                      widths = c(2,0.5,1))
+  pdf(paste0(savedir,'feature.',f,'.dmr.',".",model,".AUC.scores_performance.predx.",name,".pdf"),height = 3, width = 5)
+  print(figure)
+  dev.off()
+  
+  figure <- ggarrange(plot3, plot4,
+                      labels = c(""),
+                      ncol = 2, nrow = 1,
+                      heights = c(1, 1),
+                      widths = c(1,1))
+  pdf(paste0(savedir,'manuscript.feature.',f,'.dmr.',".",model,".AUC.scores_performance.predx.",name,".pdf"),height = 2, width = 3)
+  print(figure)
+  dev.off()
+  
+  
+  tmp$median.g = ifelse(tmp$methylation_score >= cutoff,'Higher Test Median','Lower Test Median')
+  tmp$Cancer.g= ifelse(tmp$group == 'Control',0,1)
+  
+  
+  
+  tmp$quartile <- ntile(tmp$methylation_score, 4)  
+  
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time, Cancer.g) ~ quartile, data =  tmp), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a','#EA526F','#586994'),
+    legend.labs=c("1","2","3","4"),
+    xlim = c(0,365*10), xlab = "Time (Days)", ylab = c("Survival probability"), break.x.by = 500,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)   #+ theme(legend.position = 'none')
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  tmp))$sctest[3]
+  
+  
+  pval = round(pval,digits = 3)
+  pdf(paste0(savedir,'feature.',f,'.dmr.',".",model,".AUC.scores.survquart",'.pvalue','.',pval,"_performance.predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  
+  print(plot4)
+  dev.off()
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  tmp), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Classification Score >= 0.645","Classification Score < 0.645"),#xlim = c(0,365*10),  break.x.by = 500,
+    xlab = "Time (Years)", ylab = c("Cancer-free Fraction"),
+    font.x = c(11, face = "bold"), 
+    font.y = c(11, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)   #+ theme(legend.position = 'none')
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  tmp))$sctest[3]
+  
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',".",model,".AUC.scores.cutoff",'.pvalue','.',pval,"_performance.predx.",name,".pdf"), onefile=FALSE,height = 3, width = 5)
+  print(plot4)
+  dev.off()
+  
+  tmp$group = ifelse(tmp$group == 'Control','control','cancer')
+  
+  weights2<-round(weightsf(tmp$GRP_Id, tmp))
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time, Cancer.g) ~ quartile, data =  tmp,weights =weights2), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a','#EA526F','#586994'),
+    legend.labs=c("1","2","3","4"),
+    xlim = c(0,365*10), xlab = "Time (Days)", ylab = c("Survival probability"), break.x.by = 500,
+    font.x = c(14, face = "bold"), 
+    font.y = c(14, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)   #+ theme(legend.position = 'none')
+  
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ quartile, data =  tmp,weights = weights2))$sctest[3]
+  
+  
+  pval = round(pval,digits = 3)
+  pdf(paste0(savedir,'feature.',f,'.dmr.',".",model,".AUC.scores.weighted.survquart",'.pvalue','.',pval,"_performance.predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  
+  print(plot4)
+  dev.off()
+  
+  
+  
+  plot4 = ggsurvplot(
+    fit = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  tmp,weights =weights2 ), 
+    risk.table = F,
+    #cumevents = TRUE,
+    palette = c('#2a9d8f','#e9c46a'),
+    legend.labs=c("Classification Score >= 0.645","Classification Score < 0.645"),#xlim = c(0,365*10),  break.x.by = 500,
+    xlab = "Time (Years)", ylab = c("Cancer-free Fraction"),
+    font.x = c(11, face = "bold"), 
+    font.y = c(11, face = "bold"), font.tickslab = c(14), 
+    alpha = 0.6,
+    font.legend = c(10), risk.table.fontsize = 5, risk.table.col = "black", size = 1)   #+ theme(legend.position = 'none')
+  pval = summary(coxph(Surv(censorship_time, Cancer.g) ~ median.g, data =  tmp,weights = weights2))$sctest[3]
+  
+  fit1 = survfit(Surv(censorship_time/365, Cancer.g) ~ median.g, data =  tmp,weights =weights2 )
+  d1 <- with(fit1, data.frame(time, surv, strata=rep(1:2, each=length(surv) / 2)))
+  
+  plot5 = ggplot(d1, aes(x = time,y = surv, group = strata))+ 
+    #geom_line()+
+    geom_smooth()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.2)) +
+    
+    theme_bw()+
+    scale_color_manual(values = c('#2a9d8f','#e9c46a')) +
+    scale_fill_manual(values = c('#2a9d8f','#e9c46a')) +
+    
+    theme(text = element_text(size=5),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          axis.title.x = element_blank(),
+          #axis.text.x = element_blank(),
+          
+          #axis.title.y = element_blank(),
+          
+          legend.title = element_blank(),
+          axis.text=element_text(size=7),
+          axis.title=element_text(size=7)) +
+    
+    ylab('Time (Years)') + xlab('Cancer-free Fraction') 
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',".",model,".AUC.scores.weighted.cutoff",'.pvalue','.',pval,"_performance.predx.",name,".pdf"), onefile=FALSE,height = 3, width = 5)
+  print(plot4)
+  dev.off()
+  
+  sample.information.filt = merge(sample.information.merged, tmp[,c('GRP_Id','methylation_score')], by= 'GRP_Id')
+  sample.information.filt$HR = ifelse(sample.information.filt$group == 'control','Control',sample.information.filt$HR)
+  sample.information.filt$HER2_status = ifelse(sample.information.filt$group == 'control','Control',sample.information.filt$HER2_status)
+  sample.information.filt$Stage = ifelse(sample.information.filt$group != 'control' & sample.information.filt$Stage == '','UNK',sample.information.filt$Stage)
+  sample.information.filt$HR = ifelse(sample.information.filt$group != 'control' & sample.information.filt$HR == '','UNK',sample.information.filt$HR)
+  sample.information.filt$HER2_status = ifelse(sample.information.filt$group != 'control' & sample.information.filt$HER2_status == '','UNK',sample.information.filt$HER2_status)
+  sample.information.filt$Stage = ifelse(sample.information.filt$Stage == 0,'I',sample.information.filt$Stage)
+  sample.information.filt$HR = ifelse(sample.information.filt$group == 'control','Control',sample.information.filt$HR)
+  
+  
+  sample.information.filt$PR = capitalize(ifelse(is.na(sample.information.filt$PR) == T &  sample.information.filt$group == 'control','Control',sample.information.filt$PR ))
+  sample.information.filt$PR = capitalize(ifelse(is.na(sample.information.filt$PR) == T &  sample.information.filt$group != 'control','UNK',sample.information.filt$PR ))
+  
+  sample.information.filt$ER = capitalize(ifelse(is.na(sample.information.filt$ER) == T &  sample.information.filt$group == 'control','Control',sample.information.filt$ER ))
+  sample.information.filt$ER = capitalize(ifelse(is.na(sample.information.filt$ER) == T &  sample.information.filt$group != 'control','UNK',sample.information.filt$ER ))
+  
+  sample.information.filt$HR = ifelse(sample.information.filt$HR == 'Not Reported.Not Tested','UNK',sample.information.filt$HR )
+  sample.information.filt$PR = capitalize(ifelse(sample.information.filt$PR == 'Not Reported.Not Tested','UNK',sample.information.filt$PR ))
+  sample.information.filt$ER = capitalize(ifelse(sample.information.filt$ER == 'Not Reported.Not Tested','UNK',sample.information.filt$ER ))
+  sample.information.filt$HR.breakdown = ifelse( sample.information.filt$ER %in% c('Low_positive','Positive') | sample.information.filt$PR %in% c('Low_positive','Positive'),'Single Positive','Negative')
+  sample.information.filt$HR.breakdown = ifelse( sample.information.filt$ER %in% c('Low_positive','Positive') & sample.information.filt$PR %in% c('Low_positive','Positive'),'Double Positive',sample.information.filt$HR.breakdown)
+  sample.information.filt$HR.breakdown = ifelse( sample.information.filt$HR.breakdown == 'Negative' & sample.information.filt$group %in% c('control'),'Control',sample.information.filt$HR.breakdown)
+  sample.information.filt$HR.breakdown = ifelse( sample.information.filt$ER %in% c('UNK') | sample.information.filt$PR %in% c('UNK'),'UNK',sample.information.filt$HR.breakdown)
+  
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',".",model,".stage.methylation_score.",".predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  plot1=ggplot(sample.information.filt, aes(x = Stage, y = methylation_score, col= Stage)) + 
+    geom_boxplot(outlier.shape = NA)+ theme_bw()+
+    geom_point()+
+    # scale_color_manual(values = c('HR-' = '#5E2BFF','HR+' = '#FC6DAB',Control = 'Black')) +
+    scale_color_manual(values = c(Control ='Black',I='#BDA0BC',II = '#4C061D',III="#EE964B",IV="#0077B6",UNK='Grey')) +
+    
+    theme(text = element_text(size=9),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    ylab('Classification Score') + xlab('')
+  print(plot1)
+  dev.off()
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',model,".hr.methylation_score.","predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  plot1=ggplot(sample.information.filt, aes(x = HR, y = methylation_score, col= HR)) + 
+    geom_boxplot(outlier.shape = NA)+ theme_bw()+
+    geom_point()+
+    # scale_color_manual(values = c('HR-' = '#5E2BFF','HR+' = '#FC6DAB',Control = 'Black')) +
+    scale_color_manual(values = c('Negative' = '#5E2BFF','Positive' = '#FC6DAB',Control = 'Black',UNK='Grey')) +
+    
+    theme(text = element_text(size=9),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    ylab('Classification Score') + xlab('')
+  print(plot1)
+  dev.off()
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',model,".pr.methylation_score.","predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  plot1=ggplot(sample.information.filt, aes(x = PR, y = methylation_score, col= PR)) + 
+    geom_boxplot(outlier.shape = NA)+ theme_bw()+
+    geom_point()+
+    # scale_color_manual(values = c('HR-' = '#5E2BFF','HR+' = '#FC6DAB',Control = 'Black')) +
+    scale_color_manual(values = c('Negative' = '#5E2BFF','Positive' = '#FC6DAB','Low_positive' = '#C3C3E6',Control = 'Black',UNK='Grey')) +
+    
+    theme(text = element_text(size=9),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    ylab('Classification Score') + xlab('')
+  print(plot1)
+  dev.off()
+  
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',model,".er.methylation_score.","predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  plot1=ggplot(sample.information.filt, aes(x = ER, y = methylation_score, col= ER)) + 
+    geom_boxplot(outlier.shape = NA)+ theme_bw()+
+    geom_point()+
+    # scale_color_manual(values = c('HR-' = '#5E2BFF','HR+' = '#FC6DAB',Control = 'Black')) +
+    scale_color_manual(values = c('Negative' = '#5E2BFF','Positive' = '#FC6DAB','Low_positive' = '#C3C3E6',Control = 'Black',UNK='Grey')) +
+    
+    theme(text = element_text(size=9),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    ylab('Classification Score') + xlab('')
+  print(plot1)
+  dev.off()
+  
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',model,".hr.bd.methylation_score.","predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  plot1=ggplot(sample.information.filt, aes(x = HR.breakdown, y = methylation_score, col= HR.breakdown)) + 
+    geom_boxplot(outlier.shape = NA)+ theme_bw()+
+    geom_point()+
+    # scale_color_manual(values = c('HR-' = '#5E2BFF','HR+' = '#FC6DAB',Control = 'Black')) +
+    scale_color_manual(values = c('Negative' = '#5E2BFF','Double Positive' = '#FC6DAB','Single Positive' = '#C3C3E6',Control = 'Black',UNK='Grey')) +
+    
+    theme(text = element_text(size=9),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    ylab('Classification Score') + xlab('')
+  print(plot1)
+  dev.off()
+  
+  sample.information.filt$HER2_status = ifelse(sample.information.filt$HER2_status == 'Overexpressed/Amplified','Positive',sample.information.filt$HER2_status)
+  sample.information.filt$HER2_status = ifelse(sample.information.filt$HER2_status == 'Not Reported/Not Tested','UNK',sample.information.filt$HER2_status)
+  
+  pdf(paste0(savedir,'feature.',f,'.dmr.',model,".her2.methylation_score.","predx.",name,".pdf"), onefile=FALSE,height = 3, width = 4)
+  plot1=ggplot(sample.information.filt, aes(x = HER2_status, y = methylation_score, col= HER2_status)) + 
+    geom_boxplot(outlier.shape = NA)+ theme_bw()+
+    geom_point()+
+    # scale_color_manual(values = c('HR-' = '#5E2BFF','HR+' = '#FC6DAB',Control = 'Black')) +
+    scale_color_manual(values = c('Negative' = '#5E2BFF','Positive' = '#FC6DAB','Low_positive' = '#C3C3E6',Control = 'Black',UNK='Grey')) +
+    
+    theme(text = element_text(size=9),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    ylab('Classification Score') + xlab('')
+  print(plot1)
+  dev.off()
+  
+}
+postdx.plot.bound.plot = function(prediction_table, model = 'rf',dirsave,cutoff = 0.63) {
+  
+  auc.plot = tpr.fpr.calc(prediction_table)
+  auc.plot$Stage = 'All'
+  auc.plot.stage.list = list('All' = auc.plot)
+  
+  #stage
+  controls = c('all','split')
+  for (c in controls) {
+    if (c == 'split') {
+      stages = NULL
+      sens.01= NULL
+      sens.05= NULL
+      stage.list = list("Early (I & II)" = c('I','II'), "Late (III & IV)" = c('III','IV')) 
+      for (i in c(1:length(stage.list))) {
+        auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]) 
+        auc.plot.stage.1$Stage = names(stage.list)[i]
+        auc.plot.stage.list[[i+1]] = auc.plot.stage.1
+        stages = c(stages,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]))
+        sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+        sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+        
+      }
+      prediction_table.merged = merge(prediction_table,ext.info[,c('SampleID','Stage','HR.STATUS','STATUS.SUMMARY')],by.x = 'GRP_Id',by.y='SampleID',all.x = T)
+      prediction_table.merged = merge(prediction_table.merged,combined.info[,c('GRP_Id','Diagnosis_Time')], by = 'GRP_Id')
+      prediction_table.merged$Diagnosis_Time = ifelse(prediction_table.merged$Diagnosis_Time == 'HN_Cancer','HNSC',prediction_table.merged$Diagnosis_Time)
+      prediction_table.merged$Diagnosis_Time = ifelse(prediction_table.merged$Diagnosis_Time == 'Bratman.Controls','Non-Cancer',prediction_table.merged$Diagnosis_Time)
+      
+      prediction_table.merged[is.na(prediction_table.merged$Stage),'Stage'] = prediction_table.merged[is.na(prediction_table.merged$Stage),'Diagnosis_Time']
+      prediction_table.merged[is.na(prediction_table.merged$HR.STATUS),'HR.STATUS'] = prediction_table.merged[is.na(prediction_table.merged$HR.STATUS),'HR.STATUS']
+      prediction_table.merged[is.na(prediction_table.merged$STATUS.SUMMARY),'STATUS.SUMMARY'] = prediction_table.merged[is.na(prediction_table.merged$STATUS.SUMMARY),'STATUS.SUMMARY']
+      
+      prediction_table.merged$Stage = factor(prediction_table.merged$Stage, levels =c("Non-Cancer" ,"HNSC" ,'I','II' ,'III','IV','UNK')) 
+      
+      
+      #sens/spec
+      hnsc.spec = (nrow(prediction_table.merged[prediction_table.merged$Stage == 'HNSC' & prediction_table.merged$methylation_score < cutoff,])/nrow(prediction_table.merged[prediction_table.merged$Stage == 'HNSC',]))
+      control.spec = (nrow(prediction_table.merged[prediction_table.merged$Stage == 'Non-Cancer' & prediction_table.merged$methylation_score < cutoff,])/nrow(prediction_table.merged[prediction_table.merged$Stage == 'Non-Cancer',]))
+      stage12 = (nrow(prediction_table.merged[prediction_table.merged$Stage %in% c('I','II') & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$Stage %in% c('I','II'),]))
+      stage34 = (nrow(prediction_table.merged[prediction_table.merged$Stage %in% c('III','IV') & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$Stage %in% c('III','IV'),]))
+      stageunk = (nrow(prediction_table.merged[prediction_table.merged$Stage == 'UNK' & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$Stage == 'UNK',]))
+      hrpos = (nrow(prediction_table.merged[prediction_table.merged$HR.STATUS %in% c('Positive') & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$HR.STATUS %in% c('Positive'),]))
+      hrneg = (nrow(prediction_table.merged[prediction_table.merged$HR.STATUS %in% c('Negative') & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$HR.STATUS %in% c('Negative'),]))
+      lum = (nrow(prediction_table.merged[prediction_table.merged$STATUS.SUMMARY %in% c('ER+') & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$STATUS.SUMMARY %in% c('ER+'),]))
+      her2 = (nrow(prediction_table.merged[prediction_table.merged$STATUS.SUMMARY %in% c('HER2+') & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$STATUS.SUMMARY %in% c('HER2+'),]))
+      tnbc = (nrow(prediction_table.merged[prediction_table.merged$STATUS.SUMMARY %in% c('TNBC') & prediction_table.merged$methylation_score >= cutoff,])/nrow(prediction_table.merged[prediction_table.merged$STATUS.SUMMARY %in% c('TNBC'),]))
+      non.brca = data.frame(group = factor(c('Non-Cancer','HNSC'),levels = c('Non-Cancer','HNSC')), perf = c(control.spec,hnsc.spec))
+      stage = data.frame(group = c('I/II','III/IV','UNK'), perf = c(stage12,stage34, stageunk))
+      hr = data.frame(group = c('HR-','HR+'), perf = c(hrneg,hrpos))
+      subtype = data.frame(group = c('Lum','HER2+','TNBC'), perf = c(lum,her2,tnbc))
+      
+      #classification score
+      sig = t.test(prediction_table.merged[prediction_table.merged$Stage =='HNSC','methylation_score'], prediction_table.merged[prediction_table.merged$Stage =='Non-Cancer','methylation_score'])
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.control.score.postdx.pdf"),height = 2, width = 1.5)
+      plot1=ggplot(prediction_table.merged[prediction_table.merged$reported =='control',], aes(x = Stage, y = methylation_score, col= Stage)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",I='#BDA0BC',II = '#4C061D',III="#EE964B",IV="#0077B6",UNK='Grey')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank(),
+              axis.title.x=element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot1)
+      dev.off()
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.control.spec.postdx.pdf"),height = 2, width = 1.5)
+      plot2=ggplot(non.brca, aes(x = group, y = perf, fill= group)) + 
+        geom_bar(stat = 'identity')+ theme_bw()+
+        scale_fill_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",I='#BDA0BC',II = '#4C061D',III="#EE964B",IV="#0077B6",UNK='Grey')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank(),
+              axis.title.x=element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Performance') + xlab('')
+      print(plot2)
+      dev.off()
+      
+      prediction_table.merged$STATUS.SUMMARY = ifelse(prediction_table.merged$STATUS.SUMMARY == 'ER+','Lum',prediction_table.merged$STATUS.SUMMARY)
+      
+      #prediction_table.merged$STATUS.SUMMARY = factor(prediction_table.merged$STATUS.SUMMARY, levels =c("Non-Cancer" ,"HNSC" ,"ER+","HER2+" ,"TNBC")) 
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.mol.subtype.subtype.postdx.pdf"),height = 2, width = 1.5)
+      plot5=ggplot(prediction_table.merged[prediction_table.merged$reported !='control',], aes(x = STATUS.SUMMARY, y = methylation_score, col= STATUS.SUMMARY)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",'Lum'='#FFD3BA','HER2+'='#FF3A20','TNBC'='#548687')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank(),
+              axis.text.y=element_blank(),
+              axis.title.x=element_blank(),
+              axis.title.y=element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot5)
+      dev.off()
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.subtype.sens.postdx.pdf"),height = 2, width = 1.5)
+      plot6=ggplot(subtype, aes(x = group, y = perf, fill= group)) + 
+        geom_bar(stat = 'identity')+ theme_bw()+
+        scale_fill_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",'Lum'='#FFD3BA','HER2+'='#FF3A20','TNBC'='#548687')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank(),
+              axis.text.y=element_blank(),
+              axis.title.x=element_blank(),
+              axis.title.y=element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Performance') + xlab('')
+      print(plot6)
+      dev.off()
+      
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.hr.subtype.postdx.pdf"),height = 2, width = 1.3)
+      prediction_table.merged$HR = ifelse(prediction_table.merged$HR.STATUS == 'Positive','HR+',prediction_table.merged$HR.STATUS)
+      prediction_table.merged$HR = ifelse(prediction_table.merged$HR.STATUS == 'Negative','HR-',prediction_table.merged$HR)
+      prediction_table.merged$HR = factor(prediction_table.merged$HR,levels  = c("Non-Cancer" ,"HNSC" ,'HR-' ,'HR+' ))
+      plot7=ggplot(prediction_table.merged[prediction_table.merged$reported !='control',], aes(x = HR, y = methylation_score, col= HR)) + 
+        geom_boxplot(outlier.shape = NA)+ theme_bw()+
+        scale_color_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",'HR-' = '#5E2BFF','HR+' = '#FC6DAB')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank(),
+              axis.text.y=element_blank(),
+              axis.title.x=element_blank(),
+              axis.title.y=element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Classification Score') + xlab('')
+      print(plot7)
+      dev.off()
+      
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.hr.sens.postdx.pdf"),height = 2, width = 1.3)
+      plot8=ggplot(hr, aes(x = group, y = perf, fill= group)) + 
+        geom_bar(stat = 'identity')+ theme_bw()+
+        scale_fill_manual(values = c("Non-Cancer" ='Black',"HNSC" = "#CAD49D",'HR-' = '#5E2BFF','HR+' = '#FC6DAB')) +
+        
+        theme(text = element_text(size=9),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank(),
+              axis.text.y=element_blank(),
+              axis.title.x=element_blank(),
+              axis.title.y=element_blank()) +
+        scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.2)) +ylab('Performance') + xlab('')
+      print(plot8)
+      dev.off()
+      
+      
+      figure <- ggarrange(plot1, plot5,plot7,plot2,plot6,plot8,
+                          labels = c(""),
+                          ncol = 3, nrow = 2,
+                          heights = c(0.5, 0.5,0.5),
+                          widths = c(1.2,1,0.9))
+      pdf(paste0(dirsave,'feature.',f,'.dmr.',c,".",model,"_performance.all.postdx.pdf"),height = 4, width = 3.9)
+      print(figure)
+      dev.off()
+      
+      
+      
+      
+    } 
+  }
+  
+  
+  
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,"_AUC_performance.stage.postdx.pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = Stage)) + 
+    geom_line(size = 1) +
+    geom_line(data =  auc.plot.stage.list[[2]], aes(x = fpr, y =tpr,col = Stage),size=1)+
+    geom_line(data =  auc.plot.stage.list[[3]], aes(x = fpr, y =tpr,col = Stage),size=1)+
+    
+    
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c(All ='Black',"Early (I & II)"='#BDA0BC',"Late (III & IV)" = '#EE964B')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  
+  ####hr status
+  hr.status = NULL
+  for (i in c('Positive','Negative')) {
+    auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$HR.STATUS == i,'SampleID'] |prediction_table$reported == 'control',]) 
+    auc.plot.stage.1$HR_Status = i
+    auc.plot.stage.list[[i]] = auc.plot.stage.1
+    hr.status = c(hr.status,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$HR.STATUS == i,'SampleID'] |prediction_table$reported == 'control',]))
+    sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+    sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+    
+  }
+  
+  stages = NULL
+  sens.01= NULL
+  sens.05= NULL
+  stage.list = list("Early (I & II)" = c('I','II'), "Late (III & IV)" = c('III','IV')) 
+  for (i in c(1:length(stage.list))) {
+    auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]) 
+    auc.plot.stage.1$Stage = names(stage.list)[i]
+    auc.plot.stage.list[[i+1]] = auc.plot.stage.1
+    stages = c(stages,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$Stage %in%  stage.list[[i]],'SampleID'] |prediction_table$reported == 'control',]))
+    sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+    sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+    
+  }
+  
+  
+  auc.plot.stage.list[["All"]]$HR_Status = 'All'
+  
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,"_AUC_performance.hrstatus.postdx.pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = HR_Status)) + 
+    geom_line(size = 1) +
+    geom_line(data =  auc.plot.stage.list[['Positive']], aes(x = fpr, y =tpr,col = HR_Status),size=1)+
+    geom_line(data =  auc.plot.stage.list[['Negative']], aes(x = fpr, y =tpr,col = HR_Status),size=1)+
+    
+    
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'bottom',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c(Negative = '#5E2BFF',Positive = '#FC6DAB',All = 'Black')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  ####Subtype
+  hr.status = NULL
+  auc.plot.stage.list = list()
+  for (i in c('ER+','HER2+','TNBC')) {
+    auc.plot.stage.1 =tpr.fpr.calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$STATUS.SUMMARY == i,'SampleID'] |prediction_table$reported == 'control',]) 
+    auc.plot.stage.1$STATUS.SUMMARY = i
+    auc.plot.stage.list[[i]] = auc.plot.stage.1
+    hr.status = c(hr.status,auc_calc(prediction_table[prediction_table$GRP_Id %in% ext.info[ext.info$STATUS.SUMMARY == i,'SampleID'] |prediction_table$reported == 'control',]))
+    sens.05 =c(sens.05, max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.05,'tpr']))
+    sens.01 = c(sens.01,max(auc.plot.stage.1[auc.plot.stage.1$fpr < 0.01,'tpr']))
+    
+  }
+  auc.plot.stage.list[["All"]] =  auc.plot
+  auc.plot.stage.list[["All"]]$STATUS.SUMMARY = 'All'
+  
+  pdf(paste0(dirsave,'feature.',f,'.dmr.',".",model,"_AUC_performance.subtype.postdx.pdf"),height = 3, width = 3)
+  plot = ggplot( auc.plot.stage.list[['All']], aes(y = tpr,x = fpr,col = STATUS.SUMMARY)) + 
+    geom_line(size = 1) +
+    geom_line(data =  auc.plot.stage.list[['ER+']], aes(x = fpr, y =tpr,col = STATUS.SUMMARY),size=1)+
+    geom_line(data =  auc.plot.stage.list[['HER2+']], aes(x = fpr, y =tpr,col = STATUS.SUMMARY),size=1)+
+    geom_line(data =  auc.plot.stage.list[['TNBC']], aes(x = fpr, y =tpr,col = STATUS.SUMMARY),size=1)+
+    
+    theme_bw()+
+    scale_y_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    scale_x_continuous(limits = c(0,1), expand = c(0, 0), breaks = seq(0,1,0.1)) +
+    
+    theme(text = element_text(size=6),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank(),
+          axis.text=element_text(size=10),
+          axis.title=element_text(size=10,face="bold")) +
+    scale_color_manual(values = c('ER+'='#FFD3BA','HER2+'='#FF3A20','TNBC'='#548687','All' = 'Black')) +
+    xlab('False Positive Rate') + 
+    ylab('True Positive Rate') + ggtitle(paste0('AUC: ',round(prediction_table$auroc[1],digits = 3)))# + geom_line(data = concordance.df.mediantest, aes(x = year, y = cil), size = 1, col = '#612940')
+  print(plot)
+  #+ scale_fill_manual(values = cpg_region_colors)+ guides(colour = guide_legend(override.aes = list(size=4))) + ggtitle(gtitle)
+  dev.off()
+  
+  
+  figure <- ggarrange(plot2, plot1,plot3,
+                      labels = c(""),
+                      ncol = 3, nrow = 1,
+                      heights = c(0.5, 0.5,0.5),
+                      widths = c(2,0.5,1))
+  pdf(paste0(savedir,'feature.',f,'.dmr.',type,".",model,".AUC.scores_performance.predx.pdf"),height = 3, width = 5)
+  print(figure)
+  dev.off()
+  
+  
+  
+}
+model = 'RF'
+f = 150
+
+postdx.plot.bound(targ.file.format.postdx.summary,model = model, dirsave = savedir, cutoff= cutoff,name ='final')
+predx.plot.bound(targ.file.format.predx.summary,test.samples.predx,model = model, dirsave = savedir,name = 'final',cutoff = cutoff)
+postdx.plot.bound.plot(targ.file.format.postdx.summary,model = model, dirsave = savedir,cutoff = cutoff)
+
+
+
+
+
+
+
+
+
