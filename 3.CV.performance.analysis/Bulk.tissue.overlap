@@ -1,0 +1,1038 @@
+#!/usr/bin/env Rscript
+library(ggpubr)
+library(UpSetR)
+library(ggplot2)
+library(ggfortify)
+library("scatterplot3d") # load
+library(RColorBrewer)
+library(minfi)
+library(ggpubr)
+library(patchwork)
+library(reshape2)
+library(Hmisc)
+library(scales)
+library(plyr)
+
+
+####else#####
+cpg_count = readRDS('hg38_cpg_window_300_count.RDS') #number of cpg sites across 300bp regions
+cpg_count = cpg_count[cpg_count$count > 5,] #selecting windows with at least 6 or mor CpG sites
+
+regulatory = readRDS('hg38.window300.promoter.enhancer.RDS')
+cgi=readRDS('hg38.cig.info.300.RDS')
+blood.wgbs = readRDS('hg38.wbc.ihec.300.mean.RDS')
+blood.remove = unique(unlist(lapply(blood.wgbs[1:3], function(x) x[x$pct > 0.1 & x$cell_mean > 0.25,'window'] )))
+blacklist = readRDS('hg38-blacklist.v2_window300.RDS')
+repeat.element = readRDS('hg38.repeat.window.300.filter.elements.cut.RDS')
+
+#
+dmrtable_dir='/dmr/output/dir/'
+predx.dmrs= readRDS(paste0(dmrtable_dir,'deseq2.cv.median.dmr.RDS'))
+targ.filt = function(x) {
+  a = x[x %in% cpg_count$window]
+  a = a[!a %in% blacklist$window]
+  a = a[a %in% regulatory$window | a %in% cgi$window | a %in% repeat.element$window]
+  a = a[!a %in% blood.remove1]
+  a = autosome_filt(a)
+  return(a)
+}
+rownames(predx.dmrs) = predx.dmrs$window
+predx.dmrs = predx.dmrs[predx.dmrs$window %in% targ.filt(predx.dmrs$window),]
+
+predx.dmrs.sig = predx.dmrs[predx.dmrs$pvalue < 0.05 & abs(predx.dmrs$logFC) > 0,] #
+predx.dmrs.sig = predx.dmrs.sig[predx.dmrs.sig$window %in% targ.filt(predx.dmrs.sig$window),]
+
+predx.dmrs.sig = predx.dmrs.sig[order(predx.dmrs.sig$pvalue),]
+predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,] #
+predx.dmrs.sig.hypo = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+
+predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[order(predx.dmrs.sig.hyper$pvalue),][1:150,]
+predx.dmrs.sig.hypo = predx.dmrs.sig.hypo[order(predx.dmrs.sig.hypo$pvalue),][1:150,]
+
+HM450.hg38.annotation = readRDS('HM450.hg38.annotation.window300.RDS')
+
+
+#tcga hyper regions enrichment analysis####
+brca.pbl.ids.raw = readRDS('/.mounts/labs/awadallalab/private/ncheng/methylation_analysis/tissue_methylome_profiles/breast_wbc/brca_blood_450k_idat_df.RDS')
+brca.pbl.funnorm = readRDS('/.mounts/labs/awadallalab/private/ncheng/methylation_analysis/tissue_methylome_profiles/breast_wbc/breast_wbc_idat_filt_funnorm.RDS')
+pbl.females.ids = readRDS('/.mounts/labs/awadallalab/private/ncheng/vcfs/norm_meth/meth_array/pbmc/450k.females.idatids.RDS')
+breast.subtype = readRDS('/.mounts/labs/awadallalab/private/ncheng/vcfs/tcga_meth/breast/clinical_info/brca_subtype.RDS')
+brca.pbl.ids = unique(brca.pbl.ids.raw[gsub('_.*','',brca.pbl.ids.raw$idat_ids) %in% pbl.females.ids | brca.pbl.ids.raw$tissue == 'breast',])
+HM450.hg38.annotation = readRDS('/.mounts/labs/awadallalab/private/ncheng/annotation_files/meth_array/hg38/HM450.hg38.annotation.window300.RDS')
+
+
+tcga.dmr.dir= '/.mounts/labs/awadallalab/private/ncheng/methylation_analysis/tissue_methylome_profiles/breast_wbc/'
+breast_cancer_blood_dmr = readRDS(paste0(tcga.dmr.dir,'breast_cancer_blood_dmr.RDS'))
+breast_cancer_normal_dmr = readRDS(paste0(tcga.dmr.dir,'breast_cancer_normal_dmr.RDS'))
+
+#breast cancer vs blood
+breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < 0.05 & breast_cancer_blood_dmr$abs_difference> 0.2,]
+breast_cancer_normal_dmr_sig = breast_cancer_normal_dmr[breast_cancer_normal_dmr$p.adjust < 0.05 & breast_cancer_normal_dmr$abs_difference> 0.2,]
+
+
+background = targ.filt(rownames(matrix))
+#grange sig overlap
+results.df.tmp.brcablood = z.score.permutation(breast_cancer_blood_dmr_sig, predx.dmrs.sig.hyper,background)
+z.score.permutation = function(breast_cancer_blood_dmr_sig, predx.dmrs.sig.hyper,background, plot = F) {
+  summary.df.all = NULL
+  for (region in c('Islands','Shores','Shelves','Open Sea','All')) {
+    if (region == 'All') {
+      background.hm450 = background[background %in% HM450.hg38.annotation$window]
+      
+    } else if (region == 'Islands') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[HM450.hg38.annotation$CGIposition %in% c('Island'),]$window]
+      
+    } else if (region == 'Shores') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[HM450.hg38.annotation$CGIposition %in% c('N_Shore','S_Shore'),]$window]
+      
+    } else if (region == 'Shelves') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[HM450.hg38.annotation$CGIposition %in% c('N_Shelf','S_Shelf'),]$window]
+      
+    } else if (region == 'Open Sea') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[!HM450.hg38.annotation$CGIposition %in% c('Island','N_Shore','S_Shore','N_Shelf','S_Shelf'),]$window]
+      
+    }
+    
+    tcga.dmrs = HM450.hg38.annotation[HM450.hg38.annotation$probeID %in% breast_cancer_blood_dmr_sig$probe,'window']
+    tcga.dmrs = unique(background.hm450[background.hm450 %in% tcga.dmrs])
+    predx.hm450.dmrs = unique(background.hm450[background.hm450 %in% predx.dmrs.sig.hyper$window])
+    observed.overlap.windows = predx.hm450.dmrs[predx.hm450.dmrs %in% tcga.dmrs]
+    observed.overlap.count = length(observed.overlap.windows)
+    random.selection.list = list()
+    summary.df = NULL
+    n.size = length(predx.hm450.dmrs)
+    print(n.size)
+    for (i in 1:3000) {
+      set.seed(i) 
+      tmp = background.hm450[sample(1:length(background.hm450),n.size,replace = F)]
+      tmp.overlap = unique(tmp[tmp %in% tcga.dmrs])
+      tmp.df.return = data.frame(seed = i, group = 'permutation', region = region,n.overlap = length(tmp.overlap))
+      summary.df = rbind(summary.df,tmp.df.return)
+      random.selection.list[[length(random.selection.list)+1]] = tmp
+    }
+    summary.df$zscore = (summary.df$n.overlap -mean(summary.df$n.overlap))/sd(summary.df$n.overlap)
+    
+    observed.df =  data.frame(seed = 0, group = 'observed', region = region,n.overlap = observed.overlap.count,zscore= (observed.overlap.count -mean(summary.df$n.overlap))/sd(summary.df$n.overlap))
+    
+    summary.df = rbind(observed.df,summary.df)
+    summary.df$sig.p = 2*pnorm(q=summary.df$zscore, lower.tail=FALSE)
+    summary.df.all = rbind(summary.df.all,summary.df)
+  }
+  if (plot == T) {
+    overlap.regions = HM450.hg38.annotation[HM450.hg38.annotation$window %in% observed.overlap.windows,]
+    
+  }
+  return(summary.df.all)
+}
+overlap.regions = function(breast_cancer_blood_dmr_sig, predx.dmrs.sig.hyper,background, plot = F) {
+  summary.df.all = NULL
+  for (region in c('Islands','Shores','Shelves','Open Sea','All')) {
+    if (region == 'All') {
+      background.hm450 = background[background %in% HM450.hg38.annotation$window]
+      
+    } else if (region == 'Islands') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[HM450.hg38.annotation$CGIposition %in% c('Island'),]$window]
+      
+    } else if (region == 'Shores') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[HM450.hg38.annotation$CGIposition %in% c('N_Shore','S_Shore'),]$window]
+      
+    } else if (region == 'Shelves') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[HM450.hg38.annotation$CGIposition %in% c('N_Shelf','S_Shelf'),]$window]
+      
+    } else if (region == 'Open Sea') {
+      background.hm450 = background[background %in% HM450.hg38.annotation[!HM450.hg38.annotation$CGIposition %in% c('Island','N_Shore','S_Shore','N_Shelf','S_Shelf'),]$window]
+      
+    }
+    
+    tcga.dmrs = HM450.hg38.annotation[HM450.hg38.annotation$probeID %in% breast_cancer_blood_dmr_sig$probe,'window']
+    tcga.dmrs = unique(background.hm450[background.hm450 %in% tcga.dmrs])
+    predx.hm450.dmrs = unique(background.hm450[background.hm450 %in% predx.dmrs.sig.hyper$window])
+    observed.overlap.windows = predx.hm450.dmrs[predx.hm450.dmrs %in% tcga.dmrs]
+    observed.overlap.count = length(observed.overlap.windows)
+    random.selection.list = list()
+    summary.df = NULL
+    if (length(observed.overlap.windows) >0) {
+      summary.df = data.frame(windows = observed.overlap.windows, region = region )
+      summary.df.all = rbind(summary.df.all,summary.df)
+    }
+    
+  }
+  if (plot == T) {
+    overlap.regions = HM450.hg38.annotation[HM450.hg38.annotation$window %in% observed.overlap.windows,]
+    
+  }
+  return(summary.df.all)
+}
+
+overall.results.brcablood = NULL
+overall.results.brcabrnm = NULL
+p.threshold =  c('0.05','0.01','0.001','0.0001')
+effect = c(seq(0,0.5,0.1))
+direct = c('cfDNA Hyper, BRCA Hyper','cfDNA Hyper, BRCA Hypo','cfDNA Hypo, BRCA Hyper','cfDNA Hypo, BRCA Hypo')
+#direct = c('cfDNA Hyper, BRCA Hyper')
+
+#breast
+for (p in p.threshold) {
+  for (j in effect) {
+    for (d in direct){
+      if (d == 'cfDNA Hyper, BRCA Hyper') {
+        breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference> j,]
+        breast_cancer_normal_dmr_sig = breast_cancer_normal_dmr[breast_cancer_normal_dmr$p.adjust < p & breast_cancer_normal_dmr$abs_difference> j,]
+        predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+        
+      } else if (d == 'cfDNA Hyper, BRCA Hypo') {
+        breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference< -j,]
+        breast_cancer_normal_dmr_sig = breast_cancer_normal_dmr[breast_cancer_normal_dmr$p.adjust < p & breast_cancer_normal_dmr$abs_difference< -j,]
+        predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+        
+      }  else if (d == 'cfDNA Hypo, BRCA Hypo') {
+        breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference< -j,]
+        breast_cancer_normal_dmr_sig = breast_cancer_normal_dmr[breast_cancer_normal_dmr$p.adjust < p & breast_cancer_normal_dmr$abs_difference< -j,]
+        predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+        
+      }  else if (d == 'cfDNA Hypo, BRCA Hyper') {
+        breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference> j,]
+        breast_cancer_normal_dmr_sig = breast_cancer_normal_dmr[breast_cancer_normal_dmr$p.adjust < p & breast_cancer_normal_dmr$abs_difference> j,]
+        predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+        
+      } 
+      predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[order(predx.dmrs.sig.hyper$pvalue),]
+      predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[1:150,]
+      
+      results.df.tmp.brcablood = z.score.permutation(breast_cancer_blood_dmr_sig, predx.dmrs.sig.hyper,background) 
+      results.df.tmp.brcablood$pvalue = p
+      results.df.tmp.brcablood$abs.diff = j
+      results.df.tmp.brcablood$direction = d
+      overall.results.brcablood = rbind(overall.results.brcablood,results.df.tmp.brcablood)
+      
+      results.df.tmp.brcabrnm = z.score.permutation(breast_cancer_normal_dmr_sig, predx.dmrs.sig.hyper,background) 
+      results.df.tmp.brcabrnm$pvalue = p
+      results.df.tmp.brcabrnm$abs.diff = j
+      results.df.tmp.brcabrnm$direction = d
+      overall.results.brcabrnm = rbind(overall.results.brcabrnm,results.df.tmp.brcabrnm)
+    }
+    
+  }
+  
+}
+
+#plotting overlap region -cpg regions#
+#overall.results.brcablood = readRDS(overall.results.brcablood,'breast.blood.over')
+p=0.0001  
+j=0.2
+d ='cfDNA Hyper, BRCA Hyper'
+targ.results = overall.results.brcablood[overall.results.brcablood$pvalue == p & overall.results.brcablood$abs.diff == j & overall.results.brcablood$direction == d,]
+targ.results$region =factor(targ.results$region, levels = c('All','Islands','Shores','Shelves','Open Sea'))
+targ.results$Sig = ifelse(targ.results$sig.p < 0.0001, 'Sig','Non-Sig')
+regioncol = c('Islands' ='#29335C','Shores' = '#F3A712','Shelves' = '#DB2B39','Open Sea' = '#A89B83','All' = 'black')
+
+plot1 = ggplot(targ.results[targ.results$group == 'permutation',], aes(x = region,y=zscore,col= region)) +
+  geom_boxplot(outlier.shape = NA, aes(x = region,y=zscore,color = region)) + 
+  scale_color_manual(values = regioncol) +
+  
+  geom_point(data = targ.results[targ.results$group == 'observed',],mapping = aes(x = region, y = zscore,fill = Sig),shape = 23, col = 'black')+
+  scale_fill_manual(values = c('Non-Sig'='grey',Sig='red')) +
+  
+  scale_shape_manual(values=c(23))+
+  theme_bw()+
+  theme(text = element_text(size=15),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'none',
+        legend.title = element_blank(),
+  ) + 
+  scale_y_continuous( labels = label_number(accuracy = 0.1)) +
+  xlab('Region') + ylab('Z-Score Normalized Overlap') 
+
+plot2 = ggplot(targ.results[targ.results$group == 'observed',], aes(x = region,y=n.overlap,fill = region)) + 
+  geom_bar(stat= 'identity')+
+  scale_fill_manual(values = regioncol) +
+  theme_bw()+
+  theme(text = element_text(size=15),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        legend.position = 'none',
+        legend.title = element_blank()) +
+  xlab('Region') + ylab('Overlapping Count') 
+
+figure <- ggarrange(plot2, plot1,
+                    labels = c(""),
+                    ncol = 1, nrow = 2,
+                    heights = c(0.3, 0.5),
+                    widths = c(1.5,0.7))
+
+pdf('permutation.overlap.pdf', height= 5, width= 5)
+print(figure)
+dev.off()
+
+options(scipen=99990)
+
+d1=c('cfDNA Hyper, BRCA Hyper')
+
+targ.results = overall.results.brcablood[overall.results.brcablood$pvalue == p & overall.results.brcablood$abs.diff == j,]
+targ.results$region =factor(targ.results$region, levels = c('All','Islands','Shores','Shelves','Open Sea'))
+targ.results$Sig = ifelse(targ.results$sig.p < 0.0001, 'Sig','Non-Sig')
+regioncol = c('Islands' ='#29335C','Shores' = '#F3A712','Shelves' = '#DB2B39','Open Sea' = '#A89B83','All' = 'black')
+for(region in  c('All','Islands','Shores','Shelves','Open Sea')) {
+  targ.results1 = targ.results[targ.results$region == region,]
+  targ.results1$direction = gsub(', ','\n',targ.results1$direction)
+  plot1 = ggplot(targ.results1[targ.results1$group == 'permutation',], aes(x = direction,y=zscore)) +
+    geom_boxplot(outlier.shape = NA, aes(x = direction,y=zscore)) + 
+    scale_color_manual(values = regioncol) +
+    
+    geom_point(data = targ.results1[targ.results1$group == 'observed',],mapping = aes(x = direction, y = zscore,fill = Sig),shape = 23,col = 'black')+
+    scale_fill_manual(values = c('grey','red')) +
+    scale_shape_manual(values=c(23))+
+    theme_bw()+
+    theme(text = element_text(size=15),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) + 
+    xlab('Region') + ylab('Z-Score Normalized Overlap') 
+  
+  plot2 = ggplot(targ.results1[targ.results1$group == 'observed',], aes(x = direction,y=n.overlap)) + 
+    geom_bar(stat= 'identity')+
+    scale_fill_manual(values = regioncol) +
+    theme_bw()+
+    theme(text = element_text(size=15),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    xlab('Region') + ylab('Overlapping Count') 
+  
+  figure <- ggarrange(plot2, plot1,
+                      labels = c(""),
+                      ncol = 1, nrow = 2,
+                      heights = c(0.3, 0.5),
+                      widths = c(1.5,0.7))
+  file = gsub(' ','.',paste0('permutation.overlap.dir.all',region,'.pdf'))
+  pdf(file, height= 5, width= 5)
+  print(figure)
+  dev.off()
+}
+#pancancer hyper
+cancer.groups = c('breast','brain','skin','lung','colorectal','pancreatic','prostate','bladder','liver','kidney','oesophageal', 'uterus','thyroid','headneck')
+overall.results.pancanblood = NULL
+overall.resultspancannorm = NULL
+overall.resultsnormblood =NULL
+overlap.pancanblood = NULL
+overlap.pancannorm = NULL
+overlap.normblood = NULL
+
+for (c in cancer.groups) {
+  cancer.dmr.dir = '/.mounts/labs/awadallalab/private/ncheng/vcfs/tcga_meth/cancer.pbl.rg/'
+  targ.cancer.dmr = readRDS(paste0(cancer.dmr.dir,c,'_wbc.dmrs.RDS'))
+  targ.cancer.dmr$cancer.blood.abs.diff = targ.cancer.dmr$cancer.mean -targ.cancer.dmr$blood.mean
+  targ.cancer.dmr$cancer.norm.abs.diff = targ.cancer.dmr$cancer.mean -targ.cancer.dmr$adjnormal.mean
+  targ.cancer.dmr$norm.blood.abs.diff =targ.cancer.dmr$adjnormal.mean -targ.cancer.dmr$blood.mean
+  d1='cfDNA Hyper, BRCA Hyper'
+  
+  print(c)
+  for (p in 0.0001) {
+    for (j in 0.1) {
+      for (d in d1){
+        if (d == 'cfDNA Hyper, BRCA Hyper') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff> j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff> j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff> j,]
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+          
+        } else if (d == 'cfDNA Hyper, BRCA Hypo') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff< -j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff< -j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff< -j,]
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+          
+        }  else if (d == 'cfDNA Hypo, BRCA Hypo') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff< -j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff< -j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff< -j,]
+          
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+          
+        }  else if (d == 'cfDNA Hypo, BRCA Hyper') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff> j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff> j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff> j,]
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+          
+        } 
+        predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[order(predx.dmrs.sig.hyper$pvalue),]
+        predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[1:150,]
+        results.df.tmp.brcablood = z.score.permutation(breast_cancer_blood_dmr_sig,predx.dmrs.sig.hyper,background) 
+        results.df.tmp.brcablood$pvalue = p
+        results.df.tmp.brcablood$abs.diff = j
+        results.df.tmp.brcablood$direction = gsub('BRCA','Tissue',d)
+        results.df.tmp.brcablood$tissue = c
+        
+        overall.results.pancanblood = rbind(overall.results.pancanblood,results.df.tmp.brcablood)
+        tmp.overlap = overlap.regions(breast_cancer_blood_dmr_sig,predx.dmrs.sig.hyper,background) 
+        tmp.overlap$tissue = c
+        tmp.overlap$pvalue = p
+        tmp.overlap$abs.diff = j
+        tmp.overlap$direction = gsub('BRCA','Tissue',d)
+        tmp.overlap$tissue = c
+        
+        if( is.data.frame(tmp.overlap) == T) {
+          overlap.pancanblood = rbind(overlap.pancanblood,tmp.overlap)
+          
+        }
+        
+        results.df.tmp.brcabrnm = z.score.permutation(breast_cancer_normal_dmr_sig, predx.dmrs.sig.hyper,background) 
+        results.df.tmp.brcabrnm$pvalue = p
+        results.df.tmp.brcabrnm$abs.diff = j
+        results.df.tmp.brcabrnm$direction = gsub('BRCA','Tissue',d)
+        results.df.tmp.brcabrnm$tissue =c 
+        
+        overall.resultspancannorm = rbind(overall.resultspancannorm,results.df.tmp.brcabrnm)
+        tmp.overlap = overlap.regions(breast_cancer_normal_dmr_sig, predx.dmrs.sig.hyper,background) 
+        tmp.overlap$tissue = c
+        tmp.overlap$pvalue = p
+        tmp.overlap$abs.diff = j
+        tmp.overlap$direction = gsub('BRCA','Tissue',d)
+        tmp.overlap$tissue = c
+        if( is.data.frame(tmp.overlap) == T) {
+          overlap.pancannorm = rbind(overlap.pancannorm,tmp.overlap)
+          
+        }
+        
+        results.df.tmp.brnmblood = z.score.permutation(breast_normal_blood_dmr_sig, predx.dmrs.sig.hyper,background) 
+        results.df.tmp.brnmblood$pvalue = p
+        results.df.tmp.brnmblood$abs.diff = j
+        results.df.tmp.brnmblood$direction = gsub('BRCA','Tissue',d)
+        results.df.tmp.brnmblood$tissue =c 
+        
+        overall.resultsnormblood = rbind(overall.resultsnormblood,results.df.tmp.brnmblood)
+        tmp.overlap = overlap.regions(breast_normal_blood_dmr_sig, predx.dmrs.sig.hyper,background)
+        tmp.overlap$tissue = c
+        tmp.overlap$pvalue = p
+        tmp.overlap$abs.diff = j
+        tmp.overlap$direction = gsub('BRCA','Tissue',d)
+        tmp.overlap$tissue = c
+        if( is.data.frame(tmp.overlap) == T) {
+          overlap.normblood = rbind(overlap.normblood,tmp.overlap)
+          
+        }
+        
+        
+        
+      }
+      
+    }
+    
+  }
+  
+}
+#computing overlapping hyper markers between cancers#
+saveRDS(overlap.pancanblood,'overlap.pancanblood.RDS')
+saveRDS(overlap.pancannorm,'overlap.pancannorm.RDS')
+saveRDS(overlap.normblood,'overlap.normblood.RDS')
+
+saveRDS(overall.results.pancanblood,'overall.results.pancanblood.RDS')
+saveRDS(overall.resultspancannorm,'overall.resultspancannorm.RDS')
+saveRDS(overall.resultsnormblood,'overall.resultsnormblood.RDS')
+overlap.pancanblood = NULL
+overlap.pancannorm = NULL
+overlap.normblood = NULL
+
+for (c in cancer.groups) {
+  cancer.dmr.dir = '/.mounts/labs/awadallalab/private/ncheng/vcfs/tcga_meth/cancer.pbl.rg/'
+  targ.cancer.dmr = readRDS(paste0(cancer.dmr.dir,c,'_wbc.dmrs.RDS'))
+  targ.cancer.dmr$cancer.blood.abs.diff = targ.cancer.dmr$cancer.mean -targ.cancer.dmr$blood.mean
+  targ.cancer.dmr$cancer.norm.abs.diff = targ.cancer.dmr$cancer.mean -targ.cancer.dmr$adjnormal.mean
+  targ.cancer.dmr$norm.blood.abs.diff =targ.cancer.dmr$adjnormal.mean -targ.cancer.dmr$blood.mean
+  d1='cfDNA Hyper, BRCA Hyper'
+  
+  print(c)
+  for (p in 0.0001) {
+    for (j in 0.1) {
+      for (d in d1){
+        if (d == 'cfDNA Hyper, BRCA Hyper') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff> j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff> j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff> j,]
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+          
+        } else if (d == 'cfDNA Hyper, BRCA Hypo') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff< -j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff< -j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff< -j,]
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+          
+        }  else if (d == 'cfDNA Hypo, BRCA Hypo') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff< -j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff< -j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff< -j,]
+          
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+          
+        }  else if (d == 'cfDNA Hypo, BRCA Hyper') {
+          breast_cancer_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.blood.qval < p & targ.cancer.dmr$cancer.blood.abs.diff> j,]
+          breast_cancer_normal_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$cancer.norm.qval < p & targ.cancer.dmr$cancer.norm.abs.diff> j,]
+          breast_normal_blood_dmr_sig = targ.cancer.dmr[targ.cancer.dmr$norm.blood.qval < p & targ.cancer.dmr$norm.blood.abs.diff> j,]
+          
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+          
+        } 
+        predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[order(predx.dmrs.sig.hyper$pvalue),]
+        predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[1:150,]
+        
+        
+        tmp.overlap = overlap.regions(breast_cancer_blood_dmr_sig,predx.dmrs.sig.hyper,background) 
+        tmp.overlap$tissue = c
+        overlap.pancanblood = rbind(overlap.pancanblood,tmp.overlap)
+        
+        
+        
+        tmp.overlap = overlap.regions(breast_cancer_normal_dmr_sig, predx.dmrs.sig.hyper,background) 
+        tmp.overlap$tissue = c
+        overlap.pancannorm = rbind(overlap.pancannorm,tmp.overlap)
+        
+        
+        tmp.overlap = overlap.regions(breast_normal_blood_dmr_sig, predx.dmrs.sig.hyper,background)
+        tmp.overlap$tissue = c
+        overlap.normblood = rbind(overlap.normblood,tmp.overlap)
+        
+        
+        
+      }
+      
+    }
+    
+  }
+  
+}
+
+overlap.pancanblood = readRDS('overlap.pancanblood.RDS')
+overlap.pancanblood = overlap.pancanblood[overlap.pancanblood$direction == 'cfDNA Hyper, Tissue Hyper',]
+tmp1 = split(overlap.pancanblood,overlap.pancanblood$tissue)
+names(tmp1) = capitalize(names(tmp1))
+overlap.hyper = HM450.hg38.annotation[,c('window','CGIposition','gene')]
+for (i in 1:length(tmp1)) {
+  overlap.hyper[,names(tmp1)[i]] = ifelse(overlap.hyper$window %in% tmp1[[i]]$window,1,0)
+}
+
+overlap.hyper$region = overlap.hyper$cpg_region
+overlap.hyper$cpg_region = gsub('N_','',gsub('S_','',overlap.hyper$CGIposition))
+overlap.hyper[is.na(overlap.hyper$cpg_region),'cpg_region'] = 'null'
+overlap.hyper = unique(overlap.hyper)
+pdf(paste0(figdir,'cancer.tissue.blood.overlap.pdf'),height = 4.5, width =5)
+print(upset(overlap.hyper,nsets = 20,sets = c(capitalize(cancer.groups[!cancer.groups %in% c('kidney','prostate'),])),order.by="freq"),
+      queries = list(
+        list(query = elements, 
+             params = list("cpg_region", c("Island","Shore","Shelf","null")), color = "#A89B83", active = T),
+        list(query = elements, 
+             params = list("cpg_region", c("Island","Shore","Shelf")), color = "#DB2B39", active = T),
+        list(query = elements, 
+             params = list("cpg_region", c("Island","Shore")), color = '#F3A712', active = T),
+        list(query = elements, 
+             params = list("cpg_region", c("Island")), color = '#29335C', active = T)))
+
+
+dev.off()
+
+targ.matrix = overlap.hyper[,c(4:(ncol(overlap.hyper)-1))]
+pdf('pancan.overlap.upset.pdf',height = 5, width = 5)
+pheatmap(targ.matrix[rowSums(targ.matrix) > 0,])
+dev.off()
+#plotting hyper-hypo overlap all#
+overall.results.brcabrnm = overall.results.brcabrnm[order(overall.results.brcabrnm$sig.p),]
+tmp = split(overall.results.brcabrnm,overall.results.brcabrnm$direction)
+options(scipen=99990)
+p=0.0001     
+j=0.1
+dmr.group=c('cfDNA Hyper, Tissue Hyper')
+
+dmrs = list(pancanblood = overall.results.pancanblood, pancannorm=overall.resultspancannorm, normblood = overall.resultsnormblood)
+figdir='path/to/save/figures/'
+figdir1 = paste0(figdir,'/topall.p.0001/')
+dir.create(figdir1,recursive = T)
+setwd(figdir)
+for (dmr in names(dmrs)) {
+  targ.overlap = dmrs[[dmr]]
+  targ.results = targ.overlap[targ.overlap$tissue != 'kidney',]
+  targ.results = targ.results[targ.results$direction == 'cfDNA Hyper, Tissue Hyper',]
+  targ.results$region =factor(targ.results$region, levels = c('All','Islands','Shores','Shelves','Open Sea'))
+  targ.results$Sig = ifelse(targ.results$sig.p < 0.0001, 'Sig','Non-Sig')
+  
+  regioncol = c('Islands' ='#29335C','Shores' = '#F3A712','Shelves' = '#DB2B39','Open Sea' = '#A89B83','All' = 'black')
+  for (d in dmr.group) {
+    for(region in  c('All','Islands','Shores','Shelves','Open Sea')) { #
+      if (region =='All') {
+        targ.results1 = targ.results[targ.results$region != region,]
+        targ.results2 = targ.results[targ.results$region == region,]
+        
+      } else {
+        targ.results1 = targ.results[targ.results$region == region,]
+        targ.results2 = targ.results[targ.results$region == region,]
+        
+        
+      }
+      
+      
+      targ.results1 = targ.results1[targ.results1$direction == d,]
+      targ.results2 = targ.results2[targ.results2$direction == d,]
+      
+      
+      targ.results1$direction = gsub(', ','\n',targ.results1$direction)
+      targ.results1$tissue  = capitalize(targ.results1$tissue)
+      targ.results2$tissue = capitalize(targ.results2$tissue)
+      
+      tmp = targ.results2[targ.results2$seed ==0,]
+      tmp= unique(tmp[order(tmp$zscore),])
+      targ.results1$tissue  =factor( targ.results1$tissue,levels = unique(tmp$tissue))
+      targ.results2$tissue = factor( targ.results2$tissue,levels = unique(tmp$tissue))
+      
+      plot1 = ggplot(targ.results2[targ.results2$group == 'permutation',], aes(x = tissue,y=zscore)) +
+        geom_boxplot(outlier.shape = NA, aes(x = tissue,y=zscore),col = 'black') + 
+        scale_color_manual(values = regioncol) +
+        geom_point(data = targ.results2[targ.results2$group == 'observed',], aes(x = tissue, y = zscore,fill = Sig),shape = 23,col = 'black')+
+        scale_fill_manual(values = c("Non-Sig"='grey',Sig='red')) +
+        scale_shape_manual(values=c(23))+
+        theme_bw()+
+        coord_flip()+
+        theme(text = element_text(size=12),
+              #axis.ticks.y = element_blank(),
+              #axis.ticks.x = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) + 
+        scale_x_discrete(position = "bottom")+
+        scale_y_continuous(position = "right")+
+        xlab('Cancer') + ylab('Z-Score Normalized Overlap') 
+      
+      plot2 = ggplot(targ.results1[targ.results1$group == 'observed',], aes(x = tissue,y=n.overlap,fill = region)) + 
+        geom_bar(stat= 'identity',position ='stack')+
+        coord_flip()+
+        scale_fill_manual(values = regioncol) +
+        theme_bw()+
+        theme(text = element_text(size=12),
+              axis.ticks.y = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.title.y = element_blank(),
+              axis.text.y = element_blank(),
+              legend.position = 'none',
+              legend.title = element_blank()) +
+        scale_y_continuous(position = "right")+
+        xlab('Cancer') + ylab('Overlapping DMR Count') 
+      
+      figure <- ggarrange(plot1, plot2,
+                          labels = c(""),
+                          ncol = 2, nrow = 1,
+                          heights = c(0.5, 0.5),
+                          widths = c(1.5,0.7))
+      
+      file = gsub(' ','.',paste0(dmr,'_', gsub(', ','',d),'.permutation.overlap.',region,'.pdf'))
+      pdf(file, height= 4, width= 4)
+      print(figure)
+      dev.off()
+      
+    }
+    
+  }
+}
+
+
+#####plotting tcga pca with pre-dx dmrs####
+
+background = targ.filt(rownames(matrix))
+background.hm450 = background[background %in% HM450.hg38.annotation$window]
+predx.hm450.dmrs = unique(background.hm450[background.hm450 %in% predx.dmrs.sig.hyper$window])
+targ.regions = HM450.hg38.annotation[HM450.hg38.annotation$window %in% predx.hm450.dmrs,]
+
+
+#####breast tissue comparison#####
+combined.array.statistics = readRDS('brca.all.dmr.dve.RDS')
+tcga.brca.comparison.groups = c('brca.abrnm.difference','brca.blood.difference','hbrnm.blood.difference','abrnm.blood.difference','abrnm.hbrnm.difference','brca.hbrnm.difference')
+tcga.brca.comparison = c('brca.abrnm','brca.blood','brca.hbrnm','hbrnm.blood','abrnm.blood','abrnm.hbrnm')
+overall.results.brcablood =  NULL
+direct = c('cfDNA Hyper, BRCA Hyper','cfDNA Hyper, BRCA Hypo','cfDNA Hypo, BRCA Hyper','cfDNA Hypo, BRCA Hypo')
+
+p.threshold=c(0.05,0.01,0.0001)  
+effect=seq(0.1,0.3,0.1)
+p.threshold=c(0.0001)  
+effect = 0.1
+
+overlappingmarkers.breast = NULL
+overall.results.brcablood = NULL
+for (i in tcga.brca.comparison) {
+  for (p in p.threshold) {
+    for (j in effect) {
+      for (d in direct){
+        breast_cancer_blood_dmr = combined.array.statistics[,c('Name',paste0(i,'.difference'),paste0(i,'.difference.qval'))]
+        colnames(breast_cancer_blood_dmr) = c('probe','abs_difference','p.adjust')
+        if (d == 'cfDNA Hyper, BRCA Hyper') {
+          breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference> j,]
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+          
+        } else if (d == 'cfDNA Hyper, BRCA Hypo') {
+          breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference< -j,]
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC > 0.5,]
+          
+        }  else if (d == 'cfDNA Hypo, BRCA Hypo') {
+          breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference< -j,]
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+          
+        }  else if (d == 'cfDNA Hypo, BRCA Hyper') {
+          breast_cancer_blood_dmr_sig = breast_cancer_blood_dmr[breast_cancer_blood_dmr$p.adjust < p & breast_cancer_blood_dmr$abs_difference> j,]
+          predx.dmrs.sig.hyper = predx.dmrs.sig[predx.dmrs.sig$logFC < -0.5,]
+          
+        } 
+        predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[order(predx.dmrs.sig.hyper$pvalue),]
+        predx.dmrs.sig.hyper = predx.dmrs.sig.hyper[1:150,]
+        
+        results.df.tmp.brcablood = z.score.permutation(breast_cancer_blood_dmr_sig, predx.dmrs.sig.hyper,background) 
+        results.df.tmp.brcablood$pvalue = p
+        results.df.tmp.brcablood$abs.diff = j
+        results.df.tmp.brcablood$direction = d
+        results.df.tmp.brcablood$comparison = i
+        
+        overall.results.brcablood = rbind(overall.results.brcablood,results.df.tmp.brcablood)
+        
+        results.df.tmp = overlap.regions(breast_cancer_blood_dmr_sig, predx.dmrs.sig.hyper,background)
+        
+        if (length(results.df.tmp) > 0) {
+          results.df.tmp$comparison=i
+          results.df.tmp$direction = d
+          results.df.tmp$pvalue = p
+          results.df.tmp$abs.diff = j
+          overlappingmarkers.breast = rbind(overlappingmarkers.breast,results.df.tmp)
+          
+        }
+        
+      }
+      
+    }
+    
+  }
+  
+  
+}
+#saveRDS(overlappingmarkers.breast,'breast.tissue.cfdna.dmr.overlap.RDS')
+#saveRDS(overall.results.brcablood,'breast.tissue.cfdna.permutation.zscore.RDS')
+overlappingmarkers.breast = readRDS('breast.tissue.cfdna.dmr.overlap.RDS')
+overall.results.brcablood = readRDS('breast.tissue.cfdna.permutation.zscore.RDS')
+
+overlappingmarkers.breast.hyper  =overlappingmarkers.breast[overlappingmarkers.breast$direction == 'cfDNA Hyper, BRCA Hyper',]
+tmp1 = split(overlappingmarkers.breast.hyper,overlappingmarkers.breast.hyper$comparison)
+overlap.hyper = HM450.hg38.annotation[,c('window','CGIposition','gene')]
+overlap.hyper$"Adjacent Breast Normal vs Blood" = ifelse(overlap.hyper$window %in% tmp1[["abrnm.blood"]]$window,1,0)
+overlap.hyper$"Healthy Breast Normal vs Blood" = ifelse(overlap.hyper$window %in% tmp1[["hbrnm.blood"]]$window,1,0)
+overlap.hyper$"Breast Cancer vs Blood"= ifelse(overlap.hyper$window %in% tmp1[["brca.blood"]]$window,1,0)
+overlap.hyper$cpg_region = gsub('N_','',gsub('S_','',overlap.hyper$CGIposition))
+overlap.hyper[is.na(overlap.hyper$cpg_region),'cpg_region'] = 'null'
+overlap.hyper = unique(overlap.hyper[,c('window','cpg_region','Adjacent Breast Normal vs Blood','Healthy Breast Normal vs Blood','Breast Cancer vs Blood')])
+pdf(paste0(figdir,'breast.tissue.blood.overlap.pdf'),height = 4, width =5)
+print(upset(overlap.hyper,nsets = 9,keep.order = TRUE, sets = c("Adjacent Breast Normal vs Blood" ,"Healthy Breast Normal vs Blood","Breast Cancer vs Blood"),
+            queries = list(
+              list(query = elements, 
+                   params = list("cpg_region", c("Island","Shore","Shelf","null")), color = "#A89B83", active = T),
+              list(query = elements, 
+                   params = list("cpg_region", c("Island","Shore","Shelf")), color = "#DB2B39", active = T),
+              list(query = elements, 
+                   params = list("cpg_region", c("Island","Shore")), color = '#F3A712', active = T),
+              list(query = elements, 
+                   params = list("cpg_region", c("Island")), color = '#29335C', active = T))))
+
+
+dev.off()
+
+
+p=0.0001
+j=0.1
+d ='cfDNA Hyper, BRCA Hyper'
+
+for (i in tcga.brca.comparison) {
+  targ.results = overall.results.brcablood[overall.results.brcablood$pvalue == p & overall.results.brcablood$abs.diff == j & overall.results.brcablood$direction == d & overall.results.brcablood$comparison == i,]
+  targ.results$region =factor(targ.results$region, levels = c('All','Islands','Shores','Shelves','Open Sea'))
+  targ.results$Sig = ifelse(targ.results$sig.p < 0.01, 'Sig','Non-Sig')
+  regioncol = c('Islands' ='#29335C','Shores' = '#F3A712','Shelves' = '#DB2B39','Open Sea' = '#A89B83','All' = 'black')
+  
+  plot1 = ggplot(targ.results[targ.results$group == 'permutation',], aes(x = region,y=zscore,col= region)) +
+    geom_boxplot(outlier.shape = NA, aes(x = region,y=zscore,color = region)) + 
+    scale_color_manual(values = regioncol) +
+    
+    geom_point(data = targ.results[targ.results$group == 'observed',],mapping = aes(x = region, y = zscore,fill = Sig),shape = 23,col = 'black')+
+    scale_fill_manual(values = c('Non-Sig'='grey',Sig='red')) +
+    
+    scale_shape_manual(values=c(23))+
+    theme_bw()+
+    theme(text = element_text(size=12),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) + 
+    scale_y_continuous(limits = c(-3,8), breaks = seq(-2,8,2))+
+    xlab('Region') + ylab('Z-Score Normalized Overlap') 
+  
+  plot2 = ggplot(targ.results[targ.results$group == 'observed',], aes(x = region,y=n.overlap,fill = region)) + 
+    geom_bar(stat= 'identity')+
+    scale_fill_manual(values = regioncol) +
+    theme_bw()+
+    theme(text = element_text(size=12),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          legend.position = 'none',
+          legend.title = element_blank()) +
+    xlab('Region') + ylab('Overlapping Count') 
+  
+  figure <- ggarrange(plot2, plot1,
+                      labels = c(""),
+                      ncol = 1, nrow = 2,
+                      heights = c(0.3, 0.5),
+                      widths = c(1.4,0.7))
+  
+  pdf(paste0(figdir,i,'.permutation.overlap.pdf'), height= 5, width= 3.5)
+  print(figure)
+  dev.off()
+}
+
+dev.off()
+
+options(scipen=99990)
+
+d1=c('cfDNA Hyper, BRCA Hyper')
+comp = c('abrnm.blood', 'abrnm.hbrnm',  'brca.abrnm',  'brca.blood',  'brca.hbrnm', 'hbrnm.blood')
+p=0.0001
+j=0.1
+targ.results = overall.results.brcablood[overall.results.brcablood$pvalue == p & 
+                                           overall.results.brcablood$abs.diff == j,]
+targ.results$region =factor(targ.results$region, levels = c('All','Islands','Shores','Shelves','Open Sea'))
+targ.results$Sig = ifelse(targ.results$sig.p < 0.01, 'Sig','Non-Sig')
+regioncol = c('Islands' ='#29335C','Shores' = '#F3A712','Shelves' = '#DB2B39','Open Sea' = '#A89B83','All' = 'black')
+
+
+
+
+#
+
+for (c in comp) {
+  for(region in  c('All','Islands','Shores','Shelves','Open Sea')) {
+    if (region =='All') {
+      targ.results1 = targ.results[targ.results$region != region & targ.results$comparison == c,]
+      targ.results2 = targ.results[targ.results$region == region  & targ.results$comparison == c,]
+      
+    } else {
+      targ.results1 = targ.results[targ.results$region == region  & targ.results$comparison == c,]
+      targ.results2 = targ.results[targ.results$region == region  & targ.results$comparison == c,]
+      
+      
+    }
+    
+    targ.results1$direction = gsub(', ','\n',targ.results1$direction)
+    targ.results2$direction = gsub(', ','\n',targ.results2$direction)
+    
+    plot1 = ggplot(targ.results2[targ.results2$group == 'permutation',], aes(x = direction,y=zscore)) +
+      geom_boxplot(outlier.shape = NA, aes(x = direction,y=zscore),col = 'black') + 
+      scale_color_manual(values = regioncol) +
+      
+      geom_point(data = targ.results2[targ.results2$group == 'observed',],mapping = aes(x = direction, y = zscore,fill = Sig),shape = 23, col = 'black')+
+      scale_fill_manual(values = c('Non-Sig'='grey',Sig='red')) +
+      scale_shape_manual(values=c(23))+
+      theme_bw()+
+      theme(text = element_text(size=15),
+            axis.ticks.y = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.title.x = element_text(size = 10),
+            
+            legend.position = 'none',
+            legend.title = element_blank()) + 
+      scale_y_continuous(limits = c(-2,8), breaks = seq(-2,8,2)) +
+      
+      xlab('Region') + ylab('Z-Score') 
+    
+    plot2 = ggplot(targ.results1[targ.results1$group == 'observed',], aes(x = direction,y=n.overlap,fill = region)) + 
+      geom_bar(stat= 'identity',position ='stack')+
+      scale_fill_manual(values = regioncol) +
+      theme_bw()+
+      theme(text = element_text(size=15),
+            axis.ticks.y = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            legend.position = 'none',
+            legend.title = element_blank()) +
+      scale_y_continuous(limits = c(0,round_any(max(targ.results2$n.overlap), 10, f = ceiling) ), breaks = seq(0,round_any(max(targ.results2$n.overlap), 10, f = ceiling),5)) +
+      
+      xlab('Cancer') + ylab('Overlapping Count') 
+    
+    
+    figure <- ggarrange(plot2, plot1,
+                        labels = c(""),
+                        ncol = 1, nrow = 2,
+                        heights = c(0.3, 0.5),
+                        widths = c(1.5,0.9))
+    file = gsub(' ','.',paste0(figdir,c,'.permutation.overlap.dir.all',region,'.pdf'))
+    pdf(file, height= 5, width= 5)
+    print(figure)
+    dev.off()
+  }
+  
+}
+
+
+#
+
+
+#breast adj and healthy norm vs cancer/blood
+tcga.brca.comparison.groups = c('brca.abrnm.difference','brca.blood.difference','hbrnm.blood.difference','abrnm.blood.difference','abrnm.hbrnm.difference','brca.hbrnm.difference')
+tcga.brca.comparison.groups.list =  list('brca.abrnm.difference' = c('BRCA','ABRNM'),
+                                         'brca.blood.difference' = c('BRCA','PBL'),
+                                         'hbrnm.blood.difference' = c('HBRNM','PBL'),
+                                         'abrnm.blood.difference' = c('ABRNM','PBL'),
+                                         'abrnm.hbrnm.difference' = c('ABRNM','HBRNM'),
+                                         'brca.hbrnm.difference' = c('BRCA','HBRNM'))
+#array vs cfdna correlation (sig regions)
+predx.hyper = predx.hyper[order(predx.hyper$pvalue),]
+for (i in tcga.brca.comparison.groups) {
+  tcga.dmr =data.frame(probeID = combined.array.statistics$Name, abs_difference= combined.array.statistics[,i] )
+  combined.dmr = merge(predx.hyper[1:150,],HM450.hg38.annotation[,c('probeID','window','CGIposition')], by = 'window')
+  combined.dmrs = merge(combined.dmr, tcga.dmr, by = 'probeID')
+  combined.dmrs[is.na(combined.dmrs$CGIposition),'CGIposition'] = 'Open Sea'
+  combined.dmrs$CpG_Region = ifelse(combined.dmrs$CGIposition == 'Island','Islands',combined.dmrs$CGIposition)
+  combined.dmrs$CpG_Region = ifelse(combined.dmrs$CGIposition %in% c('N_Shore','S_Shore'),'Shores',combined.dmrs$CpG_Region)
+  combined.dmrs$CpG_Region = ifelse(combined.dmrs$CGIposition %in% c('N_Shelf','S_Shelf'),'Shelves',combined.dmrs$CpG_Region)
+  
+  
+  group1 = tcga.brca.comparison.groups.list[[i]][1]
+  group2 = tcga.brca.comparison.groups.list[[i]][2]
+  
+  plot1 = ggplot(combined.dmrs, aes(y = abs_difference, x = logFC)) + 
+    #geom_hex(bins =100)+
+    geom_point(data = combined.dmrs, aes(col = CpG_Region,fill = CpG_Region), alpha = 0.5)+
+    
+    theme(axis.title.y = element_text(size=13, face = 'bold'),
+          axis.title.x = element_text(size=13, face = 'bold'),
+          axis.text.x = element_text(size=13, face = 'bold'),
+          axis.text.y = element_text(size=13, face = 'bold'))  + 
+    scale_y_continuous(limits=c(-1,1), expand = c(0, 0))+
+    scale_x_continuous(limits = c(0,1.5),expand = c(0,0))+
+    # geom_smooth(method = "lm",se = FALSE,aes(col = CpG_Region))+ #,aes(col = CpG_Region )
+    geom_hline(yintercept = 0) +
+    geom_vline(xintercept = 0) +
+    expand_limits(x = 0, y = 0)+
+    #geom_density(combined.dmrs, aes(x = abs_difference))+
+    #scale_fill_viridis_c()+
+    scale_fill_manual(values = c(Islands = '#29335C',Shores = '#F3A712',Shelves = '#DB2B39','Open Sea' = '#A89B83'))+
+    scale_color_manual(values = c(Islands = '#29335C', Shores= '#F3A712', Shelves= '#DB2B39','Open Sea' = '#A89B83'))+
+    theme_bw() + theme(legend.position = "none") + ylab(paste0('Tissue Methylation Difference ', '(',group1, '-', group2,')')) + xlab('cfMeDIP-Seq logFC (BRCA/Control) ') # + ggtitle(paste0('island:',island.coef,' shore:',shore.coef,' shelf:',shelf.coef,' sea:', open.coef))# + scale_x_continuous(breaks =  seq(0.5,5,0.25)) + scale_y_continuous(breaks = seq(0.1,1,0.05))
+  
+  
+  plot3 = ggplot(combined.dmrs, aes(x = abs_difference,fill = CpG_Region,..scaled..)) + 
+    coord_flip() +
+    #geom_hex(bins =100)+
+    geom_density(aes(x = abs_difference,  fill = CpG_Region, col = CpG_Region), alpha = 0.15) +
+    theme_void()+
+    theme(legend.position = 'none',
+          plot.margin = margin(r = 0, unit = "pt"))  + 
+    #scale_fill_viridis_c()+
+    scale_x_continuous(limits=c(-1,1), expand = c(0,0))+
+    expand_limits(x = 0, y = 0)+
+    scale_fill_manual(values = c(Islands = '#29335C',Shores = '#F3A712',Shelves = '#DB2B39','Open Sea' = '#A89B83'))+
+    scale_color_manual(values = c(Islands = '#29335C', Shores= '#F3A712', Shelves= '#DB2B39','Open Sea' = '#A89B83'))
+  
+  plot2 = ggplot(combined.dmrs, aes(x = logFC,fill = CpG_Region,..scaled..)) + 
+    #coord_flip()+
+    #geom_hex(bins =100)+
+    geom_density(aes(x = logFC,  fill = CpG_Region, col = CpG_Region), alpha = 0.15) +
+    theme_void()+
+    theme(legend.position = 'none',
+          plot.margin = margin(r = 0, unit = "pt"))  + 
+    scale_x_continuous(limits = c(0,1.5),expand = c(0,0))+
+    #scale_fill_viridis_c()+
+    expand_limits(x = 0, y = 0)+
+    scale_fill_manual(values = c(Islands = '#29335C',Shores = '#F3A712',Shelves = '#DB2B39','Open Sea' = '#A89B83'))+
+    scale_color_manual(values = c(Islands = '#29335C', Shores= '#F3A712', Shelves= '#DB2B39','Open Sea' = '#A89B83'))
+  
+  tmp.plot = plot2 + plot_spacer() + plot1 + plot3 + 
+    plot_layout(ncol = 2, nrow = 2, widths = c(1, 0.2), heights = c(0.2,1))
+  pdf(paste0(figdir,i,'.medipseq.mean.var.cor.pdf'),height = 5, width = 5)
+  print(tmp.plot)
+  dev.off()
+}
+
+#array vs cfdna correlation (all regions)
+for (i in tcga.brca.comparison.groups) {
+  tcga.dmr =data.frame(probeID = combined.array.statistics$Name, abs_difference= combined.array.statistics[,i] )
+  combined.dmr = merge(predx.dmrs,HM450.hg38.annotation[,c('probeID','window','CGIposition')], by = 'window')
+  combined.dmrs = merge(combined.dmr, tcga.dmr, by = 'probeID')
+  combined.dmrs[is.na(combined.dmrs$CGIposition),'CGIposition'] = 'Open Sea'
+  combined.dmrs$CpG_Region = ifelse(combined.dmrs$CGIposition == 'Island','Islands',combined.dmrs$CGIposition)
+  combined.dmrs$CpG_Region = ifelse(combined.dmrs$CGIposition %in% c('N_Shore','S_Shore'),'Shores',combined.dmrs$CpG_Region)
+  combined.dmrs$CpG_Region = ifelse(combined.dmrs$CGIposition %in% c('N_Shelf','S_Shelf'),'Shelves',combined.dmrs$CpG_Region)
+  combined.dmrs$cfdna.sig = ifelse(combined.dmrs$window %in% predx.hyper$window[1:150], combined.dmrs$CpG_Region,'Non-sig')
+  #predx.hyper
+  
+  group1 = tcga.brca.comparison.groups.list[[i]][1]
+  group2 = tcga.brca.comparison.groups.list[[i]][2]
+  
+  plot1 = ggplot(combined.dmrs, aes(y = abs_difference, x = logFC)) + 
+    #geom_hex(bins =100)+
+    geom_point(data = combined.dmrs, aes(col = cfdna.sig,fill = cfdna.sig), alpha = 0.5)+
+    geom_point(data = combined.dmrs[combined.dmrs$cfdna.sig !='Non-sig',], aes(col = cfdna.sig,fill = cfdna.sig), alpha = 0.7)+
+    
+    theme(axis.title.y = element_text(size=13, face = 'bold'),
+          axis.title.x = element_text(size=13, face = 'bold'),
+          axis.text.x = element_text(size=13, face = 'bold'),
+          axis.text.y = element_text(size=13, face = 'bold'))  + 
+    scale_y_continuous(limits=c(-1,1), expand = c(0, 0))+
+    scale_x_continuous(limits = c(-1.5,1.5),expand = c(0,0))+
+    # geom_smooth(method = "lm",se = FALSE,aes(col = CpG_Region))+ #,aes(col = CpG_Region )
+    geom_hline(yintercept = 0) +
+    geom_vline(xintercept = 0) +
+    expand_limits(x = 0, y = 0)+
+    #geom_density(combined.dmrs, aes(x = abs_difference))+
+    #scale_fill_viridis_c()+
+    scale_fill_manual(values = c(Islands = '#29335C',Shores = '#F3A712',Shelves = '#DB2B39','Open Sea' = '#A89B83','Non-sig' = 'grey'))+
+    scale_color_manual(values = c(Islands = '#29335C', Shores= '#F3A712', Shelves= '#DB2B39','Open Sea' = '#A89B83','Non-sig' = 'grey'))+
+    theme_bw() + theme(legend.position = "none") + ylab(paste0('Tissue Methylation Difference ', '(',group1, '-', group2,')')) + xlab('cfMeDIP-Seq logFC (BRCA/Control) ') # + ggtitle(paste0('island:',island.coef,' shore:',shore.coef,' shelf:',shelf.coef,' sea:', open.coef))# + scale_x_continuous(breaks =  seq(0.5,5,0.25)) + scale_y_continuous(breaks = seq(0.1,1,0.05))
+  
+  
+  plot3 = ggplot(combined.dmrs, aes(x = abs_difference,fill = cfdna.sig,..scaled..)) + 
+    coord_flip() +
+    #geom_hex(bins =100)+
+    geom_density(aes(x = abs_difference,  fill = cfdna.sig, col = cfdna.sig), alpha = 0.15) +
+    theme_void()+
+    theme(legend.position = 'none',
+          plot.margin = margin(r = 0, unit = "pt"))  + 
+    #scale_fill_viridis_c()+
+    scale_x_continuous(limits=c(-1,1), expand = c(0,0))+
+    expand_limits(x = 0, y = 0)+
+    scale_fill_manual(values = c(Islands = '#29335C',Shores = '#F3A712',Shelves = '#DB2B39','Open Sea' = '#A89B83'))+
+    scale_color_manual(values = c(Islands = '#29335C', Shores= '#F3A712', Shelves= '#DB2B39','Open Sea' = '#A89B83'))
+  
+  plot2 = ggplot(combined.dmrs, aes(x = logFC,fill = cfdna.sig,..scaled..)) + 
+    #coord_flip()+
+    #geom_hex(bins =100)+
+    geom_density(aes(x = logFC,  fill = cfdna.sig, col = cfdna.sig), alpha = 0.15) +
+    theme_void()+
+    theme(legend.position = 'none',
+          plot.margin = margin(r = 0, unit = "pt"))  + 
+    scale_x_continuous(limits = c(-1.5,1.5),expand = c(0,0))+
+    #scale_fill_viridis_c()+
+    expand_limits(x = 0, y = 0)+
+    scale_fill_manual(values = c(Islands = '#29335C',Shores = '#F3A712',Shelves = '#DB2B39','Open Sea' = '#A89B83'))+
+    scale_color_manual(values = c(Islands = '#29335C', Shores= '#F3A712', Shelves= '#DB2B39','Open Sea' = '#A89B83'))
+  
+  tmp.plot = plot2 + plot_spacer() + plot1 + plot3 + 
+    plot_layout(ncol = 2, nrow = 2, widths = c(1, 0.2), heights = c(0.2,1))
+  pdf(paste0(figdir,i,'.medipseq.all.mean.var.cor.pdf'),height = 5, width = 5)
+  print(tmp.plot)
+  dev.off()
+}
+
+\
